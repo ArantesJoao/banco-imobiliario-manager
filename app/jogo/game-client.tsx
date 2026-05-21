@@ -60,56 +60,85 @@ export default function GameClient({
 
   return (
     <main className="flex flex-col flex-1 pb-32">
-      <header className="bg-[#0b3d91] text-white px-5 py-4 sticky top-0 z-20 shadow flex items-center justify-between">
-        <Link href="/" className="text-sm opacity-80">
-          ← Início
+      <header className="bg-ink text-cream px-5 pt-5 pb-6 rounded-b-[36px] sticky top-0 z-20 flex items-center justify-between">
+        <Link
+          href="/"
+          className="font-mono text-[10px] uppercase tracking-widest opacity-70 hover:opacity-100 shrink-0 w-12"
+        >
+          ← início
         </Link>
-        <div className="text-center">
-          <div className="text-[10px] uppercase tracking-widest opacity-70">
-            Em jogo
+        <div className="flex flex-col items-center gap-1">
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img
+            src="/icon-mark.png"
+            alt="Banco Imobiliário"
+            className="w-14 h-14 object-contain"
+          />
+          <div className="font-mono text-[10px] uppercase tracking-widest opacity-80 bracket">
+            em jogo
           </div>
-          <div className="font-bold">Banco Imobiliário</div>
         </div>
         <button
           onClick={() => setSheet({ kind: "log" })}
-          className="text-sm opacity-80"
+          className="font-mono text-[10px] uppercase tracking-widest opacity-70 hover:opacity-100 shrink-0 w-12 text-right"
         >
-          📜
+          log
         </button>
       </header>
 
-      <div className="px-4 py-4 space-y-3 max-w-md mx-auto w-full">
-        {players.map((p) => {
+      <div className="px-4 py-5 space-y-3 max-w-md mx-auto w-full">
+        {players.map((p, idx) => {
           const owned = propsByOwner.get(p.playerId) || [];
+          // Alternate accent cards for visual rhythm
+          const isAccent = idx % 3 === 1;
+          const bg = isAccent ? "bg-ink text-cream" : "bg-cream-soft text-ink";
           return (
             <div
               key={p.playerId}
-              className={`w-full rounded-2xl bg-white shadow-md p-4 ${p.isBankrupt ? "opacity-40" : ""}`}
+              className={`w-full rounded-3xl p-5 border-2 border-ink/10 ${bg} ${p.isBankrupt ? "opacity-40" : ""}`}
             >
               <button
-                onClick={() => setSheet({ kind: "player", playerId: p.playerId })}
-                className="w-full text-left flex items-center gap-3 active:scale-[0.99]"
+                onClick={() =>
+                  setSheet({ kind: "player", playerId: p.playerId })
+                }
+                className="w-full text-left active:scale-[0.99] transition"
               >
-                <div
-                  className="w-12 h-12 rounded-full grid place-items-center text-white font-black text-xl shrink-0"
-                  style={{ backgroundColor: p.color }}
-                >
-                  {p.name[0]?.toUpperCase()}
-                </div>
-                <div className="flex-1 min-w-0">
-                  <div className="font-bold truncate">{p.name}</div>
-                  <div className="text-2xl font-black text-[#0b3d91]">
-                    {formatMoney(p.balance)}
+                <div className="flex items-start justify-between gap-3">
+                  <div className="flex items-center gap-3 min-w-0">
+                    <div
+                      className="w-12 h-12 rounded-2xl grid place-items-center font-black text-xl shrink-0 border-2 border-ink"
+                      style={{ backgroundColor: p.color, color: "#fff" }}
+                    >
+                      {p.name[0]?.toUpperCase()}
+                    </div>
+                    <div className="min-w-0">
+                      <div className="font-mono text-[10px] uppercase tracking-widest opacity-60 bracket">
+                        jogador
+                      </div>
+                      <div className="h-display text-2xl truncate">
+                        {p.name}
+                      </div>
+                    </div>
                   </div>
+                  {p.isBankrupt && (
+                    <span className="font-mono text-[10px] uppercase tracking-widest bg-crimson text-cream px-2 py-1 rounded-lg font-bold">
+                      falido
+                    </span>
+                  )}
                 </div>
-                {p.isBankrupt && (
-                  <span className="text-xs bg-red-100 text-red-700 px-2 py-1 rounded-full font-semibold">
-                    Falido
+                <div className="mt-3 flex items-baseline gap-2">
+                  <span className="font-mono text-[10px] uppercase tracking-widest opacity-60">
+                    saldo
                   </span>
-                )}
+                  <span
+                    className={`h-display text-4xl ${p.balance < 0 ? (isAccent ? "text-crimson-soft" : "text-crimson") : ""}`}
+                  >
+                    {formatMoney(p.balance)}
+                  </span>
+                </div>
               </button>
               {owned.length > 0 && (
-                <div className="mt-3 -mx-4 px-4 flex gap-2 overflow-x-auto pb-2 scroll-pl-4">
+                <div className="mt-4 -mx-5 px-5 flex gap-2 overflow-x-auto pb-2 scroll-pl-5">
                   {owned.map((o) => {
                     const pr = propsById.get(o.propertyId)!;
                     return (
@@ -117,6 +146,7 @@ export default function GameClient({
                         key={o.propertyId}
                         property={pr}
                         ownership={o}
+                        accent={isAccent}
                         onClick={() =>
                           setSheet({
                             kind: "manage",
@@ -135,9 +165,9 @@ export default function GameClient({
 
         <button
           onClick={() => setSheet({ kind: "end" })}
-          className="w-full mt-6 py-3 rounded-xl bg-red-600 text-white font-bold active:scale-[0.98]"
+          className="w-full mt-6 py-4 rounded-3xl bg-crimson text-cream font-bold active:scale-[0.98] border-2 border-ink shadow-[6px_6px_0_var(--color-ink)]"
         >
-          Encerrar partida
+          Encerrar partida →
         </button>
       </div>
 
@@ -273,20 +303,25 @@ function MiniDeed({
   property,
   ownership,
   onClick,
+  accent = false,
 }: {
   property: Property;
   ownership: GameProperty;
   onClick?: () => void;
+  accent?: boolean;
 }) {
   const isStock = property.isStock;
   return (
     <button
       onClick={onClick}
-      className={`shrink-0 w-[120px] rounded-xl overflow-hidden bg-white shadow-sm border border-slate-200 text-left active:scale-[0.97] transition ${ownership.isMortgaged ? "opacity-60" : ""}`}
+      className={`shrink-0 w-[124px] rounded-2xl overflow-hidden text-left active:scale-[0.97] transition border-2 border-ink ${accent ? "bg-cream text-ink" : "bg-cream"} ${ownership.isMortgaged ? "opacity-60" : ""}`}
     >
-      <div className="h-5" style={{ backgroundColor: property.color }} />
-      <div className="px-2 py-2 flex flex-col h-[88px]">
-        <div className="text-[12px] font-bold leading-tight text-slate-800 line-clamp-2">
+      <div className="h-6" style={{ backgroundColor: property.color }} />
+      <div className="px-2.5 py-2 flex flex-col h-[92px]">
+        <div className="font-mono text-[9px] uppercase tracking-widest opacity-50">
+          {property.groupName}
+        </div>
+        <div className="text-[13px] font-bold leading-tight line-clamp-2 mt-0.5">
           {property.name}
         </div>
         <div className="mt-auto flex items-end justify-between gap-1">
@@ -298,11 +333,11 @@ function MiniDeed({
             ) : ownership.houses > 0 ? (
               <span>{"🏠".repeat(ownership.houses)}</span>
             ) : (
-              <span className="text-slate-300 text-sm">—</span>
+              <span className="opacity-30 text-sm">—</span>
             )}
           </div>
           {ownership.isMortgaged && (
-            <span className="text-[10px] font-semibold text-amber-700 bg-amber-100 px-1.5 py-0.5 rounded">
+            <span className="font-mono text-[9px] uppercase tracking-widest font-bold bg-crimson text-cream px-1.5 py-0.5 rounded">
               hipot.
             </span>
           )}
@@ -339,11 +374,11 @@ function BottomSheet({
     <div className="fixed inset-0 z-30 flex items-end justify-center">
       <button
         aria-label="Fechar"
-        className="absolute inset-0 bg-black/40"
+        className="absolute inset-0 bg-ink/40"
         onClick={onClose}
       />
-      <div className="relative w-full max-w-md bg-white rounded-t-3xl p-5 max-h-[85vh] overflow-y-auto pb-10">
-        <div className="w-12 h-1.5 bg-slate-300 rounded-full mx-auto mb-4" />
+      <div className="relative w-full max-w-md bg-cream rounded-t-[36px] p-6 max-h-[88vh] overflow-y-auto pb-10 border-t-2 border-x-2 border-ink">
+        <div className="w-12 h-1.5 bg-ink/20 rounded-full mx-auto mb-5" />
         {children}
       </div>
     </div>
@@ -357,7 +392,7 @@ function PrimaryButton({
   return (
     <button
       {...rest}
-      className="w-full py-3 rounded-xl bg-[#0b3d91] text-white font-bold active:scale-[0.98] disabled:opacity-50"
+      className="w-full py-3 rounded-2xl bg-ink text-cream font-bold active:scale-[0.98] disabled:opacity-50 border-2 border-ink"
     >
       {children}
     </button>
@@ -371,7 +406,7 @@ function SecondaryButton({
   return (
     <button
       {...rest}
-      className="w-full py-3 rounded-xl bg-slate-100 text-slate-800 font-semibold active:scale-[0.98]"
+      className="w-full py-3 rounded-2xl bg-cream text-ink font-bold active:scale-[0.98] disabled:opacity-50 border-2 border-ink"
     >
       {children}
     </button>
@@ -414,7 +449,7 @@ function PlayerActions({
         </div>
         <div>
           <div className="font-bold text-lg">{me.name}</div>
-          <div className="text-2xl font-black text-[#0b3d91]">
+          <div className="text-2xl font-black text-ink">
             {formatMoney(me.balance)}
           </div>
         </div>
@@ -452,7 +487,7 @@ function PlayerActions({
 
       {owned.length > 0 && (
         <div className="pt-3">
-          <h3 className="text-xs font-bold uppercase text-slate-500 mb-2">
+          <h3 className="text-xs font-bold uppercase text-ink/60 mb-2">
             Propriedades ({owned.length})
           </h3>
           <div className="space-y-2">
@@ -474,12 +509,12 @@ function PlayerActions({
                     {o.hasHotel && <span>🏨</span>}
                     {!o.hasHotel && o.houses > 0 && <span>{"🏠".repeat(o.houses)}</span>}
                     {o.isMortgaged && (
-                      <span className="text-xs text-amber-700 font-semibold">
+                      <span className="text-xs text-crimson font-semibold">
                         (hipotecada)
                       </span>
                     )}
                   </div>
-                  <span className="text-xs text-slate-500">›</span>
+                  <span className="text-xs text-ink/60">›</span>
                 </button>
               );
             })}
@@ -495,7 +530,7 @@ function PlayerActions({
             onClose();
           })
         }
-        className="w-full text-sm text-red-600 py-2 mt-2"
+        className="w-full text-sm text-crimson py-2 mt-2"
       >
         {me.isBankrupt ? "Reativar jogador" : "Marcar como falido"}
       </button>
@@ -534,7 +569,7 @@ function BuyPropertySheet({
     <div className="space-y-3">
       <div>
         <h2 className="font-bold text-lg">Comprar propriedade</h2>
-        <div className="text-sm text-slate-500">
+        <div className="text-sm text-ink/60">
           {me.name} · saldo {formatMoney(me.balance)}
         </div>
       </div>
@@ -542,7 +577,7 @@ function BuyPropertySheet({
         placeholder="Buscar..."
         value={query}
         onChange={(e) => setQuery(e.target.value)}
-        className="w-full px-4 py-3 rounded-xl border border-slate-200"
+        className="w-full px-4 py-3 rounded-xl border border-ink/15"
       />
       <div className="space-y-2">
         {available.map((p) => (
@@ -569,7 +604,7 @@ function BuyPropertySheet({
           </button>
         ))}
         {available.length === 0 && (
-          <div className="text-sm text-slate-500 italic text-center py-6">
+          <div className="text-sm text-ink/60 italic text-center py-6">
             Sem propriedades disponíveis.
           </div>
         )}
@@ -610,7 +645,7 @@ function PayRentSheet({
     <div className="space-y-3">
       <div>
         <h2 className="font-bold text-lg">Pagar aluguel</h2>
-        <div className="text-sm text-slate-500">
+        <div className="text-sm text-ink/60">
           {payer.name} · saldo {formatMoney(payer.balance)}
         </div>
       </div>
@@ -625,7 +660,7 @@ function PayRentSheet({
             <button
               key={o.propertyId}
               onClick={() => setSelectedId(o.propertyId)}
-              className={`w-full flex items-center justify-between rounded-lg p-3 ${isSel ? "ring-2 ring-[#0b3d91]" : ""}`}
+              className={`w-full flex items-center justify-between rounded-lg p-3 ${isSel ? "ring-2 ring-ink" : ""}`}
               style={{ backgroundColor: `${pr.color}22` }}
             >
               <div className="flex items-center gap-2 min-w-0">
@@ -635,7 +670,7 @@ function PayRentSheet({
                 />
                 <div className="text-left min-w-0">
                   <div className="font-medium truncate">{pr.name}</div>
-                  <div className="text-xs text-slate-500">
+                  <div className="text-xs text-ink/60">
                     Dono: {owner.name}
                     {pr.isStock
                       ? " · ações"
@@ -648,13 +683,13 @@ function PayRentSheet({
                 </div>
               </div>
               <div className="text-right shrink-0 ml-2">
-                <div className="font-bold text-[#0b3d91]">
+                <div className="font-bold text-ink">
                   {pr.isStock
                     ? `${(pr.stockMultiplier || 0).toLocaleString("pt-BR")} × dados`
                     : formatMoney(rent)}
                 </div>
                 {pr.isStock && (
-                  <div className="text-[10px] text-slate-500">
+                  <div className="text-[10px] text-ink/60">
                     = {formatMoney(rent)}
                   </div>
                 )}
@@ -663,7 +698,7 @@ function PayRentSheet({
           );
         })}
         {rentable.length === 0 && (
-          <div className="text-sm text-slate-500 italic text-center py-6">
+          <div className="text-sm text-ink/60 italic text-center py-6">
             Nenhuma propriedade para pagar aluguel.
           </div>
         )}
@@ -672,8 +707,8 @@ function PayRentSheet({
       {selected && (
         <div className="space-y-3 pt-2">
           {needsDice && (
-            <div className="bg-amber-50 border border-amber-200 rounded-xl p-3">
-              <label className="block text-sm font-semibold text-amber-900 mb-2">
+            <div className="bg-mint border-2 border-ink rounded-xl p-3">
+              <label className="block text-sm font-semibold text-ink mb-2">
                 Soma dos dados (aluguel = soma × ${(selected.stockMultiplier || 0).toLocaleString("pt-BR")})
               </label>
               <div className="flex gap-1 flex-wrap">
@@ -681,13 +716,13 @@ function PayRentSheet({
                   <button
                     key={n}
                     onClick={() => setDiceSum(n)}
-                    className={`w-10 h-10 rounded-lg font-bold ${diceSum === n ? "bg-[#0b3d91] text-white" : "bg-white border border-slate-200"}`}
+                    className={`w-10 h-10 rounded-lg font-bold ${diceSum === n ? "bg-ink text-white" : "bg-white border border-ink/15"}`}
                   >
                     {n}
                   </button>
                 ))}
               </div>
-              <div className="text-sm mt-2 text-amber-900">
+              <div className="text-sm mt-2 text-ink">
                 Total: <strong>{formatMoney(diceSum * (selected.stockMultiplier || 0))}</strong>
               </div>
             </div>
@@ -732,34 +767,34 @@ function TransferSheet({
   return (
     <div className="space-y-3">
       <h2 className="font-bold text-lg">Transferir</h2>
-      <div className="text-sm text-slate-500">
+      <div className="text-sm text-ink/60">
         De {from.name} · saldo {formatMoney(from.balance)}
       </div>
 
       <div className="space-y-2">
-        <label className="text-xs uppercase text-slate-500">Para</label>
+        <label className="text-xs uppercase text-ink/60">Para</label>
         <div className="grid grid-cols-2 gap-2">
           {others.map((p) => (
             <button
               key={p.playerId}
               onClick={() => setToId(p.playerId)}
-              className={`px-3 py-2 rounded-lg border-2 text-left ${toId === p.playerId ? "border-[#0b3d91] bg-blue-50" : "border-slate-200"}`}
+              className={`px-3 py-2 rounded-lg border-2 text-left ${toId === p.playerId ? "border-ink bg-mint/30" : "border-ink/15"}`}
             >
               <div className="font-medium">{p.name}</div>
-              <div className="text-xs text-slate-500">{formatMoney(p.balance)}</div>
+              <div className="text-xs text-ink/60">{formatMoney(p.balance)}</div>
             </button>
           ))}
         </div>
       </div>
 
       <label className="block">
-        <span className="text-xs uppercase text-slate-500">Valor</span>
+        <span className="text-xs uppercase text-ink/60">Valor</span>
         <input
           type="number"
           inputMode="numeric"
           value={amount || ""}
           onChange={(e) => setAmount(Number(e.target.value))}
-          className="mt-1 w-full px-4 py-3 rounded-xl border border-slate-200 text-lg font-bold"
+          className="mt-1 w-full px-4 py-3 rounded-xl border border-ink/15 text-lg font-bold"
           placeholder="0"
         />
       </label>
@@ -768,7 +803,7 @@ function TransferSheet({
         value={description}
         onChange={(e) => setDescription(e.target.value)}
         placeholder="Motivo (opcional)"
-        className="w-full px-4 py-3 rounded-xl border border-slate-200"
+        className="w-full px-4 py-3 rounded-xl border border-ink/15"
       />
 
       <PrimaryButton
@@ -833,7 +868,7 @@ function BankSheet({
               setAmount(p.v);
               setDescription(p.label.replace(/\s*\$.*/, ""));
             }}
-            className={`px-3 py-2 rounded-lg border-2 text-left ${amount === p.v ? "border-[#0b3d91] bg-blue-50" : "border-slate-200"}`}
+            className={`px-3 py-2 rounded-lg border-2 text-left ${amount === p.v ? "border-ink bg-mint/30" : "border-ink/15"}`}
           >
             {p.label}
           </button>
@@ -841,13 +876,13 @@ function BankSheet({
       </div>
 
       <label className="block">
-        <span className="text-xs uppercase text-slate-500">Valor</span>
+        <span className="text-xs uppercase text-ink/60">Valor</span>
         <input
           type="number"
           inputMode="numeric"
           value={amount || ""}
           onChange={(e) => setAmount(Number(e.target.value))}
-          className="mt-1 w-full px-4 py-3 rounded-xl border border-slate-200 text-lg font-bold"
+          className="mt-1 w-full px-4 py-3 rounded-xl border border-ink/15 text-lg font-bold"
           placeholder="0"
         />
       </label>
@@ -856,7 +891,7 @@ function BankSheet({
         value={description}
         onChange={(e) => setDescription(e.target.value)}
         placeholder="Motivo (opcional)"
-        className="w-full px-4 py-3 rounded-xl border border-slate-200"
+        className="w-full px-4 py-3 rounded-xl border border-ink/15"
       />
 
       <PrimaryButton
@@ -917,7 +952,7 @@ function ManagePropertySheet({
         />
         <div>
           <h2 className="font-bold text-lg">{property.name}</h2>
-          <div className="text-xs text-slate-500">
+          <div className="text-xs text-ink/60">
             {property.groupName}
             {ownership.hasHotel && " · 🏨 Hotel"}
             {!ownership.hasHotel && ownership.houses > 0 && ` · ${ownership.houses} casa(s)`}
@@ -927,7 +962,7 @@ function ManagePropertySheet({
       </div>
 
       {!property.isStock && (
-        <div className="bg-slate-50 rounded-xl p-3 text-sm space-y-0.5">
+        <div className="bg-cream-soft rounded-xl p-3 text-sm space-y-0.5">
           <div className="flex justify-between"><span>Aluguel</span><span>{formatMoney(property.baseRent || 0)}</span></div>
           <div className="flex justify-between"><span>1 casa</span><span>{formatMoney(property.rent1House || 0)}</span></div>
           <div className="flex justify-between"><span>2 casas</span><span>{formatMoney(property.rent2Houses || 0)}</span></div>
@@ -938,7 +973,7 @@ function ManagePropertySheet({
         </div>
       )}
       {property.isStock && (
-        <div className="bg-slate-50 rounded-xl p-3 text-sm">
+        <div className="bg-cream-soft rounded-xl p-3 text-sm">
           <div className="flex justify-between">
             <span>Lucros (soma dos dados ×)</span>
             <span>{formatMoney(property.stockMultiplier || 0)}</span>
@@ -1016,7 +1051,7 @@ function ManagePropertySheet({
       </div>
 
       <div className="border-t pt-3 mt-2 space-y-2">
-        <div className="text-xs uppercase text-slate-500 font-semibold">
+        <div className="text-xs uppercase text-ink/60 font-semibold">
           Transferir para outro jogador
         </div>
         <div className="grid grid-cols-2 gap-2">
@@ -1026,7 +1061,7 @@ function ManagePropertySheet({
               <button
                 key={p.playerId}
                 onClick={() => setTransferTo(p.playerId)}
-                className={`px-3 py-2 rounded-lg border-2 text-left ${transferTo === p.playerId ? "border-[#0b3d91] bg-blue-50" : "border-slate-200"}`}
+                className={`px-3 py-2 rounded-lg border-2 text-left ${transferTo === p.playerId ? "border-ink bg-mint/30" : "border-ink/15"}`}
               >
                 <div className="font-medium text-sm">{p.name}</div>
               </button>
@@ -1038,7 +1073,7 @@ function ManagePropertySheet({
           value={transferAmount || ""}
           onChange={(e) => setTransferAmount(Number(e.target.value))}
           placeholder="Valor pago (0 = grátis)"
-          className="w-full px-4 py-2 rounded-xl border border-slate-200"
+          className="w-full px-4 py-2 rounded-xl border border-ink/15"
         />
         <SecondaryButton
           disabled={pending || !transferTo}
@@ -1076,18 +1111,18 @@ function LogSheet({
     <div className="space-y-2">
       <h2 className="font-bold text-lg">Histórico</h2>
       {transactions.length === 0 && (
-        <div className="text-sm text-slate-500 italic text-center py-6">
+        <div className="text-sm text-ink/60 italic text-center py-6">
           Nenhuma transação ainda.
         </div>
       )}
       <ul className="space-y-2">
         {transactions.map((t) => (
-          <li key={t.id} className="bg-slate-50 rounded-lg px-3 py-2 text-sm">
+          <li key={t.id} className="bg-cream-soft rounded-lg px-3 py-2 text-sm">
             <div className="flex justify-between">
               <span className="font-medium">{t.description}</span>
               <span className="font-bold">{formatMoney(t.amount)}</span>
             </div>
-            <div className="text-xs text-slate-500">
+            <div className="text-xs text-ink/60">
               {t.fromPlayerId ? pById.get(t.fromPlayerId) || "?" : "Banco"} →{" "}
               {t.toPlayerId ? pById.get(t.toPlayerId) || "?" : "Banco"}
               {" · "}
@@ -1123,14 +1158,14 @@ function EndGameSheet({
       className="space-y-3"
     >
       <h2 className="font-bold text-lg">Encerrar partida</h2>
-      <p className="text-sm text-slate-500">
+      <p className="text-sm text-ink/60">
         Selecione o vencedor (opcional) para registrar a vitória.
       </p>
       <div className="space-y-2">
         {players.map((p) => (
           <label
             key={p.playerId}
-            className={`flex items-center gap-3 p-3 rounded-xl border-2 cursor-pointer ${winnerId === p.playerId ? "border-yellow-400 bg-yellow-50" : "border-slate-200"}`}
+            className={`flex items-center gap-3 p-3 rounded-xl border-2 cursor-pointer ${winnerId === p.playerId ? "border-ink bg-mint bg-mint/30" : "border-ink/15"}`}
           >
             <input
               type="radio"
@@ -1141,7 +1176,7 @@ function EndGameSheet({
               className="w-5 h-5"
             />
             <span className="font-medium">{p.name}</span>
-            <span className="ml-auto text-sm text-slate-500">
+            <span className="ml-auto text-sm text-ink/60">
               {formatMoney(p.balance)}
             </span>
           </label>
@@ -1154,7 +1189,7 @@ function EndGameSheet({
         <button
           type="submit"
           disabled={pending}
-          className="w-full py-3 rounded-xl bg-red-600 text-white font-bold active:scale-[0.98] disabled:opacity-50"
+          className="w-full py-3 rounded-xl bg-crimson text-white font-bold active:scale-[0.98] disabled:opacity-50"
         >
           Encerrar
         </button>

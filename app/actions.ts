@@ -125,6 +125,47 @@ export async function endGame(formData: FormData) {
   redirect("/");
 }
 
+export async function deleteGame(gameId: string) {
+  const userId = await requireUser();
+  const [game] = await db
+    .select()
+    .from(games)
+    .where(and(eq(games.id, gameId), eq(games.userId, userId)))
+    .limit(1);
+  if (!game) throw new Error("Partida não encontrada.");
+  if (game.status === "active") {
+    throw new Error("Não é possível apagar uma partida em andamento.");
+  }
+
+  // Roll back the counters that startGame/endGame bumped
+  const participants = await db
+    .select({ playerId: gamePlayers.playerId })
+    .from(gamePlayers)
+    .where(eq(gamePlayers.gameId, gameId));
+
+  for (const p of participants) {
+    await db
+      .update(players)
+      .set({
+        totalGames: sql`GREATEST(${players.totalGames} - 1, 0)`,
+      })
+      .where(eq(players.id, p.playerId));
+  }
+
+  if (game.winnerPlayerId) {
+    await db
+      .update(players)
+      .set({
+        totalWins: sql`GREATEST(${players.totalWins} - 1, 0)`,
+      })
+      .where(eq(players.id, game.winnerPlayerId));
+  }
+
+  // Cascades remove gamePlayers, gameProperties, transactions
+  await db.delete(games).where(eq(games.id, gameId));
+  revalidatePath("/");
+}
+
 export async function cancelGame() {
   const userId = await requireUser();
   const game = await requireActiveGame(userId);

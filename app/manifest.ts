@@ -8,8 +8,8 @@ export default function manifest(): MetadataRoute.Manifest {
       "Banco digital para o jogo Super Banco Imobiliário. Adicione jogadores, transfira dinheiro e gerencie propriedades.",
     start_url: "/",
     display: "standalone",
-    background_color: "#0b3d91",
-    theme_color: "#0b3d91",
+    background_color: "#1a347a",
+    theme_color: "#1a347a",
     lang: "pt-BR",
     orientation: "portrait",
     icons: [

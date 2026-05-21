@@ -1,22 +1,49 @@
 @import "tailwindcss";
 
-:root {
-  --bi-blue: #0b3d91;
-  --bi-yellow: #facc15;
+/* ─── Brand tokens ─── */
+@theme {
+  --color-cream: #f4ede1;
+  --color-cream-soft: #ebe2d2;
+  --color-ink: #1a347a;
+  --color-ink-soft: #2a4d9e;
+  --color-crimson: #d3231e;
+  --color-crimson-soft: #f0d5d4;
+  --color-mint: #4ade80;
+  --color-mint-deep: #16a34a;
+  --color-sky: #c7d4f0;
+  --font-display: var(--font-display, system-ui);
+  --font-mono: var(--font-mono, ui-monospace);
 }
 
 html,
 body {
-  font-family:
-    system-ui,
-    -apple-system,
-    "Segoe UI",
-    sans-serif;
+  font-family: var(--font-display, system-ui);
   -webkit-tap-highlight-color: transparent;
   overscroll-behavior-y: contain;
+  background: var(--color-cream);
+  color: var(--color-ink);
 }
 
 button {
   -webkit-user-select: none;
   user-select: none;
+  font-family: inherit;
+}
+
+/* Bracket-style mono labels: "[ sync.com ]" */
+.bracket::before {
+  content: "[ ";
+  opacity: 0.6;
+}
+.bracket::after {
+  content: " ]";
+  opacity: 0.6;
+}
+
+/* Editorial heading — tight tracking, slight optical sizing */
+.h-display {
+  font-family: var(--font-display);
+  font-weight: 800;
+  letter-spacing: -0.03em;
+  line-height: 0.95;
 }
