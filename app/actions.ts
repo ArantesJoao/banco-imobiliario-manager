@@ -13,6 +13,14 @@ import {
 import { and, eq, isNull, ne, sql } from "drizzle-orm";
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
+import {
+  buildingLevel,
+  canBuild,
+  canSellBuilding,
+  inspectGroup,
+  sellRefund,
+  HOTEL_LEVEL,
+} from "@/lib/building-rules";
 
 const TOKEN_COLORS = [
   "#ef4444",
@@ -194,6 +202,35 @@ async function adjustBalance(
     );
 }
 
+// ───────────────────────── Color groups ─────────────────────────
+
+/**
+ * Every card plus its ownership for a game — the color-group rules compare a
+ * card against its siblings, so a single-row lookup is never enough.
+ */
+async function loadGroupContext(gameId: string) {
+  const [allProperties, allOwnership] = await Promise.all([
+    db.select().from(properties),
+    db
+      .select()
+      .from(gameProperties)
+      .where(eq(gameProperties.gameId, gameId)),
+  ]);
+  return { properties: allProperties, ownership: allOwnership };
+}
+
+/** True when any card of this card's color still has houses or a hotel. */
+async function colorGroupHasBuildings(gameId: string, propertyId: number) {
+  const ctx = await loadGroupContext(gameId);
+  const group = inspectGroup({
+    playerId: "",
+    propertyId,
+    properties: ctx.properties,
+    ownership: ctx.ownership,
+  });
+  return group.groupHasBuildings;
+}
+
 export async function transferBetweenPlayers(args: {
   fromPlayerId: string;
   toPlayerId: string;
@@ -327,6 +364,10 @@ export async function sellPropertyToBank(args: {
     .limit(1);
   if (!prop?.purchasePrice) throw new Error("Propriedade inválida.");
 
+  if (await colorGroupHasBuildings(game.id, args.propertyId)) {
+    throw new Error("Venda todas as construções da cor antes de vender a carta.");
+  }
+
   // Pay back the purchase price (game-house rule simplification)
   await db
     .update(gameProperties)
@@ -364,6 +405,12 @@ export async function transferProperty(args: {
     .where(eq(properties.id, args.propertyId))
     .limit(1);
   if (!prop) throw new Error("Propriedade inválida.");
+
+  if (await colorGroupHasBuildings(game.id, args.propertyId)) {
+    throw new Error(
+      "Venda todas as construções da cor antes de transferir a carta.",
+    );
+  }
 
   await db
     .update(gameProperties)
@@ -490,6 +537,16 @@ export async function buildHouse(args: {
   if (gp.hasHotel) throw new Error("Já tem hotel.");
   if (gp.houses >= 4) throw new Error("Já tem 4 casas — construa um hotel.");
 
+  const ctx = await loadGroupContext(game.id);
+  const group = inspectGroup({
+    playerId: args.playerId,
+    propertyId: args.propertyId,
+    properties: ctx.properties,
+    ownership: ctx.ownership,
+  });
+  const allowed = canBuild(prop, gp, group);
+  if (!allowed.ok) throw new Error(allowed.reason);
+
   await db
     .update(gameProperties)
     .set({ houses: gp.houses + 1 })
@@ -541,6 +598,16 @@ export async function buildHotel(args: {
   if (gp.hasHotel) throw new Error("Já tem hotel.");
   if (gp.houses < 4) throw new Error("Precisa de 4 casas antes do hotel.");
 
+  const ctx = await loadGroupContext(game.id);
+  const group = inspectGroup({
+    playerId: args.playerId,
+    propertyId: args.propertyId,
+    properties: ctx.properties,
+    ownership: ctx.ownership,
+  });
+  const allowed = canBuild(prop, gp, group);
+  if (!allowed.ok) throw new Error(allowed.reason);
+
   await db
     .update(gameProperties)
     .set({ hasHotel: true, houses: 0 })
@@ -558,6 +625,69 @@ export async function buildHotel(args: {
     amount: prop.hotelCost,
     type: "build",
     description: `Construiu hotel em ${prop.name}`,
+    propertyId: prop.id,
+  });
+  revalidatePath("/jogo");
+}
+
+/**
+ * Sells one building back to the bank for half its price — a hotel steps down
+ * to 4 houses, a house comes off one at a time. The step is derived from the
+ * stored state rather than from the caller, so a stale sheet cannot sell the
+ * wrong thing.
+ */
+export async function sellBuilding(args: {
+  playerId: string;
+  propertyId: number;
+}) {
+  const userId = await requireUser();
+  const game = await requireActiveGame(userId);
+  const [prop] = await db
+    .select()
+    .from(properties)
+    .where(eq(properties.id, args.propertyId))
+    .limit(1);
+  if (!prop?.houseCost) throw new Error("Sem custo de casa.");
+
+  const ctx = await loadGroupContext(game.id);
+  const gp = ctx.ownership.find((o) => o.propertyId === args.propertyId);
+  if (!gp || gp.ownerPlayerId !== args.playerId) {
+    throw new Error("Apenas o dono pode vender construções.");
+  }
+
+  const group = inspectGroup({
+    playerId: args.playerId,
+    propertyId: args.propertyId,
+    properties: ctx.properties,
+    ownership: ctx.ownership,
+  });
+  const allowed = canSellBuilding(prop, gp, group);
+  if (!allowed.ok) throw new Error(allowed.reason);
+
+  const level = buildingLevel(gp);
+  const isHotel = level === HOTEL_LEVEL;
+  const refund = sellRefund(prop, level);
+
+  await db
+    .update(gameProperties)
+    // A hotel was built over 4 houses, so it steps back down to them.
+    .set(isHotel ? { hasHotel: false, houses: 4 } : { houses: level - 1 })
+    .where(
+      and(
+        eq(gameProperties.gameId, game.id),
+        eq(gameProperties.propertyId, args.propertyId),
+      ),
+    );
+  await adjustBalance(game.id, args.playerId, refund);
+  await db.insert(transactions).values({
+    gameId: game.id,
+    fromPlayerId: null,
+    toPlayerId: args.playerId,
+    amount: refund,
+    type: "sell_building",
+    description: isHotel
+      ? `Vendeu hotel em ${prop.name} (voltou a 4 casas)`
+      : `Vendeu casa em ${prop.name} (${level - 1}/4)`,
     propertyId: prop.id,
   });
   revalidatePath("/jogo");
@@ -589,6 +719,9 @@ export async function mortgageProperty(args: {
   if (!gp || gp.ownerPlayerId !== args.playerId)
     throw new Error("Apenas o dono pode hipotecar.");
   if (gp.isMortgaged) throw new Error("Já está hipotecada.");
+  if (await colorGroupHasBuildings(game.id, args.propertyId)) {
+    throw new Error("Venda todas as construções da cor antes de hipotecar.");
+  }
 
   await db
     .update(gameProperties)

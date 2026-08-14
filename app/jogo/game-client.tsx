@@ -4,6 +4,13 @@ import { useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { formatMoney } from "@/lib/format";
+import {
+  canBuild,
+  canSellBuilding,
+  inspectGroup,
+  sellRefund,
+  HOTEL_LEVEL,
+} from "@/lib/building-rules";
 import * as A from "../actions";
 import type { Game, Property, GameProperty, Transaction } from "@/db/schema";
 
@@ -265,6 +272,8 @@ export default function GameClient({
             propertyId={sheet.propertyId}
             property={propsById.get(sheet.propertyId)!}
             ownership={ownByProp.get(sheet.propertyId)!}
+            properties={properties}
+            allOwnership={ownership}
             players={players}
             onDone={() => {
               setSheet(null);
@@ -917,6 +926,8 @@ function ManagePropertySheet({
   playerId,
   property,
   ownership,
+  properties,
+  allOwnership,
   players,
   onDone,
 }: {
@@ -924,6 +935,8 @@ function ManagePropertySheet({
   propertyId: number;
   property: Property;
   ownership: GameProperty;
+  properties: Property[];
+  allOwnership: GameProperty[];
   players: PlayerRow[];
   onDone: () => void;
 }) {
@@ -931,16 +944,17 @@ function ManagePropertySheet({
   const [transferTo, setTransferTo] = useState<string | null>(null);
   const [transferAmount, setTransferAmount] = useState(0);
 
-  const canBuildHouse =
-    !property.isStock &&
-    !ownership.isMortgaged &&
-    !ownership.hasHotel &&
-    ownership.houses < 4;
-  const canBuildHotel =
-    !property.isStock &&
-    !ownership.isMortgaged &&
-    !ownership.hasHotel &&
-    ownership.houses === 4;
+  const group = inspectGroup({
+    playerId,
+    propertyId: property.id,
+    properties,
+    ownership: allOwnership,
+  });
+  const build = canBuild(property, ownership, group);
+  const sell = canSellBuilding(property, ownership, group);
+  const canBuildHouse = build.ok && group.level < 4;
+  const canBuildHotel = build.ok && group.level === 4;
+  const deedLocked = group.groupHasBuildings;
   const unmortgageCost = Math.round(property.mortgageValue * 1.1);
 
   return (
@@ -969,7 +983,9 @@ function ManagePropertySheet({
           <div className="flex justify-between"><span>3 casas</span><span>{formatMoney(property.rent3Houses || 0)}</span></div>
           <div className="flex justify-between"><span>4 casas</span><span>{formatMoney(property.rent4Houses || 0)}</span></div>
           <div className="flex justify-between"><span>Hotel</span><span>{formatMoney(property.rentHotel || 0)}</span></div>
-          <div className="flex justify-between border-t pt-1 mt-1"><span>Comprar casa/hotel</span><span>{formatMoney(property.houseCost || 0)}</span></div>
+          <div className="flex justify-between border-t pt-1 mt-1"><span>Comprar casa</span><span>{formatMoney(property.houseCost || 0)}</span></div>
+          <div className="flex justify-between"><span>Comprar hotel</span><span>{formatMoney(property.hotelCost || 0)}</span></div>
+          <div className="flex justify-between text-ink/60"><span>Venda de construção</span><span>metade do preço</span></div>
         </div>
       )}
       {property.isStock && (
@@ -1012,9 +1028,23 @@ function ManagePropertySheet({
             🏨 Hotel ({formatMoney(property.hotelCost || 0)})
           </PrimaryButton>
         )}
-        {!ownership.isMortgaged ? (
+        {sell.ok && (
           <SecondaryButton
             disabled={pending}
+            onClick={() =>
+              startTransition(async () => {
+                await A.sellBuilding({ playerId, propertyId: property.id });
+                onDone();
+              })
+            }
+          >
+            {group.level === HOTEL_LEVEL ? "🏨 Vender hotel" : "🏠 Vender casa"}{" "}
+            (+{formatMoney(sellRefund(property, group.level))})
+          </SecondaryButton>
+        )}
+        {!ownership.isMortgaged ? (
+          <SecondaryButton
+            disabled={pending || deedLocked}
             onClick={() =>
               startTransition(async () => {
                 await A.mortgageProperty({ playerId, propertyId: property.id });
@@ -1038,7 +1068,7 @@ function ManagePropertySheet({
           </SecondaryButton>
         )}
         <SecondaryButton
-          disabled={pending}
+          disabled={pending || deedLocked}
           onClick={() =>
             startTransition(async () => {
               await A.sellPropertyToBank({ playerId, propertyId: property.id });
@@ -1050,48 +1080,63 @@ function ManagePropertySheet({
         </SecondaryButton>
       </div>
 
-      <div className="border-t pt-3 mt-2 space-y-2">
-        <div className="text-xs uppercase text-ink/60 font-semibold">
-          Transferir para outro jogador
+      {!property.isStock && (
+        <div className="text-xs text-ink/60 space-y-1">
+          {!build.ok && group.level < HOTEL_LEVEL && <div>{build.reason}</div>}
+          {!sell.ok && group.level > 0 && <div>{sell.reason}</div>}
+          {deedLocked && (
+            <div>
+              Venda todas as construções da cor antes de hipotecar, vender ou
+              transferir a carta.
+            </div>
+          )}
         </div>
-        <div className="grid grid-cols-2 gap-2">
-          {players
-            .filter((p) => p.playerId !== playerId)
-            .map((p) => (
-              <button
-                key={p.playerId}
-                onClick={() => setTransferTo(p.playerId)}
-                className={`px-3 py-2 rounded-lg border-2 text-left ${transferTo === p.playerId ? "border-ink bg-mint/30" : "border-ink/15"}`}
-              >
-                <div className="font-medium text-sm">{p.name}</div>
-              </button>
-            ))}
+      )}
+
+      {!deedLocked && (
+        <div className="border-t pt-3 mt-2 space-y-2">
+          <div className="text-xs uppercase text-ink/60 font-semibold">
+            Transferir para outro jogador
+          </div>
+          <div className="grid grid-cols-2 gap-2">
+            {players
+              .filter((p) => p.playerId !== playerId)
+              .map((p) => (
+                <button
+                  key={p.playerId}
+                  onClick={() => setTransferTo(p.playerId)}
+                  className={`px-3 py-2 rounded-lg border-2 text-left ${transferTo === p.playerId ? "border-ink bg-mint/30" : "border-ink/15"}`}
+                >
+                  <div className="font-medium text-sm">{p.name}</div>
+                </button>
+              ))}
+          </div>
+          <input
+            type="number"
+            inputMode="numeric"
+            value={transferAmount || ""}
+            onChange={(e) => setTransferAmount(Number(e.target.value))}
+            placeholder="Valor pago (0 = grátis)"
+            className="w-full px-4 py-2 rounded-xl border border-ink/15"
+          />
+          <SecondaryButton
+            disabled={pending || !transferTo}
+            onClick={() =>
+              startTransition(async () => {
+                await A.transferProperty({
+                  fromPlayerId: playerId,
+                  toPlayerId: transferTo!,
+                  propertyId: property.id,
+                  amount: transferAmount,
+                });
+                onDone();
+              })
+            }
+          >
+            Confirmar transferência
+          </SecondaryButton>
         </div>
-        <input
-          type="number"
-          inputMode="numeric"
-          value={transferAmount || ""}
-          onChange={(e) => setTransferAmount(Number(e.target.value))}
-          placeholder="Valor pago (0 = grátis)"
-          className="w-full px-4 py-2 rounded-xl border border-ink/15"
-        />
-        <SecondaryButton
-          disabled={pending || !transferTo}
-          onClick={() =>
-            startTransition(async () => {
-              await A.transferProperty({
-                fromPlayerId: playerId,
-                toPlayerId: transferTo!,
-                propertyId: property.id,
-                amount: transferAmount,
-              });
-              onDone();
-            })
-          }
-        >
-          Confirmar transferência
-        </SecondaryButton>
-      </div>
+      )}
     </div>
   );
 }
