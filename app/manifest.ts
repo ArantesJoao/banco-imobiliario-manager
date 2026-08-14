@@ -3,7 +3,7 @@ import type { MetadataRoute } from "next";
 export default function manifest(): MetadataRoute.Manifest {
   return {
     name: "Super Banco Imobiliário",
-    short_name: "Banco BI",
+    short_name: "BI Manager",
     description:
       "Banco digital para o jogo Super Banco Imobiliário. Adicione jogadores, transfira dinheiro e gerencie propriedades.",
     start_url: "/",

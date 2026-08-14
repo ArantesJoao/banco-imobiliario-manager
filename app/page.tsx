@@ -45,7 +45,7 @@ export default async function HomePage() {
             />
             <div className="min-w-0">
               <div className="font-mono text-[10px] tracking-widest uppercase opacity-70 bracket">
-                banco bi
+                bi manager
               </div>
               <h1 className="h-display text-[28px] mt-0.5 truncate">
                 olá, {session.user.name?.split(" ")[0] || "anfitrião"}.
