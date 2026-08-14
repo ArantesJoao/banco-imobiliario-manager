@@ -21,17 +21,7 @@ import {
   sellRefund,
   HOTEL_LEVEL,
 } from "@/lib/building-rules";
-
-const TOKEN_COLORS = [
-  "#ef4444",
-  "#3b82f6",
-  "#22c55e",
-  "#eab308",
-  "#a855f7",
-  "#ec4899",
-  "#06b6d4",
-  "#f97316",
-];
+import { TOKEN_COLORS } from "@/lib/token-colors";
 
 async function requireUser() {
   const session = await auth();

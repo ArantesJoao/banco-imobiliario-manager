@@ -10,6 +10,7 @@ import {
 } from "@/db/schema";
 import { and, desc, eq } from "drizzle-orm";
 import { redirect } from "next/navigation";
+import { seatIndex } from "@/lib/token-colors";
 import GameClient from "./game-client";
 
 export default async function GamePage() {
@@ -35,6 +36,13 @@ export default async function GamePage() {
     .from(gamePlayers)
     .innerJoin(players, eq(gamePlayers.playerId, players.id))
     .where(eq(gamePlayers.gameId, game.id));
+
+  // Postgres returns updated rows in whatever order they land on the heap, so
+  // paying rent would reshuffle the cards. Pin them to the seat order instead.
+  gpRows.sort(
+    (a, b) =>
+      seatIndex(a.color) - seatIndex(b.color) || a.name.localeCompare(b.name),
+  );
 
   const allProps = await db
     .select()
