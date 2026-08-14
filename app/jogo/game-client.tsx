@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useTransition } from "react";
+import { useEffect, useRef, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { formatMoney } from "@/lib/format";
@@ -30,6 +30,13 @@ type Props = {
   transactions: Transaction[];
 };
 
+// Must match the .sheet-panel[data-closing] animation in globals.css.
+const SHEET_EXIT_MS = 150;
+// Must match the .sheet-panel[data-drag="settle"] transition in globals.css.
+const SHEET_SETTLE_MS = 150;
+// How far you have to pull the handle down before release dismisses the sheet.
+const DISMISS_PX = 90;
+
 type Sheet =
   | { kind: "player"; playerId: string }
   | { kind: "buy"; playerId: string }
@@ -50,10 +57,17 @@ export default function GameClient({
   transactions,
 }: Props) {
   const [sheet, setSheet] = useState<Sheet>(null);
+  // Kept mounted while `closing` so the exit animation can play out.
+  const [closing, setClosing] = useState(false);
   const router = useRouter();
   const [, startTransition] = useTransition();
 
   const refresh = () => router.refresh();
+  const openSheet = (s: NonNullable<Sheet>) => {
+    setClosing(false);
+    setSheet(s);
+  };
+  const closeSheet = () => setClosing(true);
 
   const propsById = new Map(properties.map((p) => [p.id, p]));
   const ownByProp = new Map(ownership.map((o) => [o.propertyId, o]));
@@ -86,7 +100,7 @@ export default function GameClient({
           </div>
         </div>
         <button
-          onClick={() => setSheet({ kind: "log" })}
+          onClick={() => openSheet({ kind: "log" })}
           className="font-mono text-[10px] uppercase tracking-widest opacity-70 hover:opacity-100 shrink-0 w-12 text-right"
         >
           log
@@ -94,19 +108,16 @@ export default function GameClient({
       </header>
 
       <div className="px-4 py-5 space-y-3 max-w-md mx-auto w-full">
-        {players.map((p, idx) => {
+        {players.map((p) => {
           const owned = propsByOwner.get(p.playerId) || [];
-          // Alternate accent cards for visual rhythm
-          const isAccent = idx % 3 === 1;
-          const bg = isAccent ? "bg-ink text-cream" : "bg-cream-soft text-ink";
           return (
             <div
               key={p.playerId}
-              className={`w-full rounded-3xl p-5 border-2 border-ink/10 ${bg} ${p.isBankrupt ? "opacity-40" : ""}`}
+              className={`w-full rounded-3xl p-5 border-2 border-ink/10 bg-cream-soft text-ink ${p.isBankrupt ? "opacity-40" : ""}`}
             >
               <button
                 onClick={() =>
-                  setSheet({ kind: "player", playerId: p.playerId })
+                  openSheet({ kind: "player", playerId: p.playerId })
                 }
                 className="w-full text-left active:scale-[0.99] transition"
               >
@@ -138,7 +149,7 @@ export default function GameClient({
                     saldo
                   </span>
                   <span
-                    className={`h-display text-4xl ${p.balance < 0 ? (isAccent ? "text-crimson-soft" : "text-crimson") : ""}`}
+                    className={`h-display text-4xl ${p.balance < 0 ? "text-crimson" : ""}`}
                   >
                     {formatMoney(p.balance)}
                   </span>
@@ -153,9 +164,8 @@ export default function GameClient({
                         key={o.propertyId}
                         property={pr}
                         ownership={o}
-                        accent={isAccent}
                         onClick={() =>
-                          setSheet({
+                          openSheet({
                             kind: "manage",
                             playerId: p.playerId,
                             propertyId: o.propertyId,
@@ -171,7 +181,7 @@ export default function GameClient({
         })}
 
         <button
-          onClick={() => setSheet({ kind: "end" })}
+          onClick={() => openSheet({ kind: "end" })}
           className="w-full mt-6 py-4 rounded-3xl bg-crimson text-cream font-bold active:scale-[0.98] border-2 border-ink shadow-[6px_6px_0_var(--color-ink)]"
         >
           Encerrar partida →
@@ -180,126 +190,123 @@ export default function GameClient({
 
       {/* ─────── Bottom sheets ─────── */}
 
-      {sheet?.kind === "player" && (
-        <BottomSheet onClose={() => setSheet(null)}>
-          <PlayerActions
-            playerId={sheet.playerId}
-            players={players}
-            properties={properties}
-            ownership={ownership}
-            propsByOwner={propsByOwner}
-            propsById={propsById}
-            onAction={(s) => setSheet(s)}
-            onClose={() => setSheet(null)}
-          />
-        </BottomSheet>
-      )}
+      {sheet && (
+        <BottomSheet
+          closing={closing}
+          onClose={closeSheet}
+          onClosed={() => {
+            setSheet(null);
+            setClosing(false);
+          }}
+        >
+          {sheet.kind === "player" && (
+            <PlayerActions
+              playerId={sheet.playerId}
+              players={players}
+              properties={properties}
+              ownership={ownership}
+              propsByOwner={propsByOwner}
+              propsById={propsById}
+              onAction={openSheet}
+              onClose={closeSheet}
+            />
+          )}
 
-      {sheet?.kind === "buy" && (
-        <BottomSheet onClose={() => setSheet(null)}>
-          <BuyPropertySheet
-            playerId={sheet.playerId}
-            players={players}
-            properties={properties}
-            ownership={ownership}
-            onDone={() => {
-              setSheet(null);
-              refresh();
-            }}
-          />
-        </BottomSheet>
-      )}
+          {sheet.kind === "buy" && (
+            <BuyPropertySheet
+              playerId={sheet.playerId}
+              players={players}
+              properties={properties}
+              ownership={ownership}
+              onDone={() => {
+                closeSheet();
+                refresh();
+              }}
+            />
+          )}
 
-      {sheet?.kind === "rent" && (
-        <BottomSheet onClose={() => setSheet(null)}>
-          <PayRentSheet
-            payerId={sheet.payerId}
-            players={players}
-            properties={properties}
-            ownership={ownership}
-            onDone={() => {
-              setSheet(null);
-              refresh();
-            }}
-          />
-        </BottomSheet>
-      )}
+          {sheet.kind === "rent" && (
+            <PayRentSheet
+              payerId={sheet.payerId}
+              players={players}
+              properties={properties}
+              ownership={ownership}
+              onDone={() => {
+                closeSheet();
+                refresh();
+              }}
+            />
+          )}
 
-      {sheet?.kind === "transfer" && (
-        <BottomSheet onClose={() => setSheet(null)}>
-          <TransferSheet
-            fromId={sheet.fromId}
-            players={players}
-            onDone={() => {
-              setSheet(null);
-              refresh();
-            }}
-          />
-        </BottomSheet>
-      )}
+          {sheet.kind === "transfer" && (
+            <TransferSheet
+              fromId={sheet.fromId}
+              players={players}
+              onDone={() => {
+                closeSheet();
+                refresh();
+              }}
+            />
+          )}
 
-      {sheet?.kind === "bank-pay" && (
-        <BottomSheet onClose={() => setSheet(null)}>
-          <BankSheet
-            mode="pay"
-            playerId={sheet.playerId}
-            onDone={() => {
-              setSheet(null);
-              refresh();
-            }}
-          />
-        </BottomSheet>
-      )}
+          {sheet.kind === "bank-pay" && (
+            <BankSheet
+              mode="pay"
+              playerId={sheet.playerId}
+              onDone={() => {
+                closeSheet();
+                refresh();
+              }}
+            />
+          )}
 
-      {sheet?.kind === "bank-receive" && (
-        <BottomSheet onClose={() => setSheet(null)}>
-          <BankSheet
-            mode="receive"
-            playerId={sheet.playerId}
-            passSalary={game.passSalary}
-            onDone={() => {
-              setSheet(null);
-              refresh();
-            }}
-          />
-        </BottomSheet>
-      )}
+          {sheet.kind === "bank-receive" && (
+            <BankSheet
+              mode="receive"
+              playerId={sheet.playerId}
+              passSalary={game.passSalary}
+              onDone={() => {
+                closeSheet();
+                refresh();
+              }}
+            />
+          )}
 
-      {sheet?.kind === "manage" && (
-        <BottomSheet onClose={() => setSheet(null)}>
-          <ManagePropertySheet
-            playerId={sheet.playerId}
-            propertyId={sheet.propertyId}
-            property={propsById.get(sheet.propertyId)!}
-            ownership={ownByProp.get(sheet.propertyId)!}
-            properties={properties}
-            allOwnership={ownership}
-            players={players}
-            onDone={() => {
-              setSheet(null);
-              refresh();
-            }}
-          />
-        </BottomSheet>
-      )}
+          {sheet.kind === "manage" && (
+            <ManagePropertySheet
+              playerId={sheet.playerId}
+              propertyId={sheet.propertyId}
+              property={propsById.get(sheet.propertyId)!}
+              ownership={ownByProp.get(sheet.propertyId)!}
+              properties={properties}
+              allOwnership={ownership}
+              players={players}
+              onDone={() => {
+                closeSheet();
+                refresh();
+              }}
+            />
+          )}
 
-      {sheet?.kind === "log" && (
-        <BottomSheet onClose={() => setSheet(null)}>
-          <LogSheet transactions={transactions} players={players} properties={properties} />
-        </BottomSheet>
-      )}
+          {sheet.kind === "log" && (
+            <LogSheet
+              transactions={transactions}
+              players={players}
+              properties={properties}
+            />
+          )}
 
-      {sheet?.kind === "end" && (
-        <BottomSheet onClose={() => setSheet(null)}>
-          <EndGameSheet
-            players={players}
-            onCancel={() => setSheet(null)}
-            onDone={() => {
-              startTransition(() => {
-                router.push("/");
-              });
-            }}
-          />
+          {sheet.kind === "end" && (
+            <EndGameSheet
+              players={players}
+              onCancel={closeSheet}
+              onDone={() => {
+                startTransition(() => {
+                  router.push("/");
+                });
+              }}
+            />
+          )}
         </BottomSheet>
       )}
     </main>
@@ -312,18 +319,16 @@ function MiniDeed({
   property,
   ownership,
   onClick,
-  accent = false,
 }: {
   property: Property;
   ownership: GameProperty;
   onClick?: () => void;
-  accent?: boolean;
 }) {
   const isStock = property.isStock;
   return (
     <button
       onClick={onClick}
-      className={`shrink-0 w-[124px] rounded-2xl overflow-hidden text-left active:scale-[0.97] transition border-2 border-ink ${accent ? "bg-cream text-ink" : "bg-cream"} ${ownership.isMortgaged ? "opacity-60" : ""}`}
+      className={`shrink-0 w-[124px] rounded-2xl overflow-hidden text-left active:scale-[0.97] transition border-2 border-ink bg-cream ${ownership.isMortgaged ? "opacity-60" : ""}`}
     >
       <div className="h-6" style={{ backgroundColor: property.color }} />
       <div className="px-2.5 py-2 flex flex-col h-[92px]">
@@ -375,20 +380,95 @@ function computeRent(
 function BottomSheet({
   children,
   onClose,
+  closing = false,
+  onClosed,
 }: {
   children: React.ReactNode;
   onClose: () => void;
+  closing?: boolean;
+  onClosed?: () => void;
 }) {
+  // Driven by a timer, not `animationend`: if the animation never runs the
+  // sheet must still unmount, otherwise it gets stuck open with no way out.
+  // The callback lives in a ref so a parent re-render (router.refresh) can't
+  // restart the timer, and reopening a sheet mid-exit cancels it.
+  const onClosedRef = useRef(onClosed);
+  useEffect(() => {
+    onClosedRef.current = onClosed;
+  });
+  useEffect(() => {
+    if (!closing) return;
+    const t = setTimeout(() => onClosedRef.current?.(), SHEET_EXIT_MS);
+    return () => clearTimeout(t);
+  }, [closing]);
+
+  // Freeze the page behind the sheet, or dragging/scrolling leaks through to it.
+  useEffect(() => {
+    const prev = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    return () => {
+      document.body.style.overflow = prev;
+    };
+  }, []);
+
+  const panelRef = useRef<HTMLDivElement>(null);
+  const dragStartY = useRef(0);
+  const [dragY, setDragY] = useState(0);
+  const [drag, setDrag] = useState<"none" | "active" | "settle">("none");
+
+  const endDrag = (dy: number) => {
+    setDrag("settle");
+    if (dy > DISMISS_PX) {
+      // Carry the panel the rest of the way out, then let `closing` unmount it.
+      setDragY(panelRef.current?.offsetHeight ?? window.innerHeight);
+      onClose();
+    } else {
+      setDragY(0);
+      setTimeout(() => setDrag("none"), SHEET_SETTLE_MS);
+    }
+  };
+
   return (
     <div className="fixed inset-0 z-30 flex items-end justify-center">
       <button
         aria-label="Fechar"
-        className="absolute inset-0 bg-ink/40"
+        data-closing={closing}
+        className="sheet-backdrop absolute inset-0 bg-ink/40"
         onClick={onClose}
       />
-      <div className="relative w-full max-w-md bg-cream rounded-t-[36px] p-6 max-h-[88vh] overflow-y-auto pb-10 border-t-2 border-x-2 border-ink">
-        <div className="w-12 h-1.5 bg-ink/20 rounded-full mx-auto mb-5" />
-        {children}
+      <div
+        ref={panelRef}
+        data-closing={closing}
+        data-drag={drag}
+        style={dragY ? { transform: `translateY(${dragY}px)` } : undefined}
+        className="sheet-panel relative w-full max-w-md bg-cream rounded-t-[36px] p-6 max-h-[88vh] overflow-y-auto pb-10 border-t-2 border-x-2 border-ink"
+      >
+        {/* Grab area — the gesture lives here, not on the scrollable body, so
+            flicking through a long list never drags the sheet by accident. */}
+        <div
+          className="sheet-grab -mt-6 -mx-6 px-6 pt-6 pb-3 cursor-grab active:cursor-grabbing"
+          onPointerDown={(e) => {
+            if (closing) return;
+            dragStartY.current = e.clientY;
+            setDrag("active");
+            setDragY(0);
+            e.currentTarget.setPointerCapture(e.pointerId);
+          }}
+          onPointerMove={(e) => {
+            if (drag !== "active") return;
+            setDragY(Math.max(0, e.clientY - dragStartY.current));
+          }}
+          onPointerUp={(e) => {
+            if (drag !== "active") return;
+            endDrag(Math.max(0, e.clientY - dragStartY.current));
+          }}
+          onPointerCancel={() => {
+            if (drag === "active") endDrag(0);
+          }}
+        >
+          <div className="w-12 h-1.5 bg-ink/20 rounded-full mx-auto" />
+        </div>
+        <div className="mt-2">{children}</div>
       </div>
     </div>
   );
@@ -439,7 +519,7 @@ function PlayerActions({
   ownership: GameProperty[];
   propsByOwner: Map<string, GameProperty[]>;
   propsById: Map<number, Property>;
-  onAction: (s: Sheet) => void;
+  onAction: (s: NonNullable<Sheet>) => void;
   onClose: () => void;
 }) {
   const me = players.find((x) => x.playerId === playerId)!;
