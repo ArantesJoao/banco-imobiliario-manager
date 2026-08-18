@@ -221,24 +221,128 @@ async function colorGroupHasBuildings(gameId: string, propertyId: number) {
   return group.groupHasBuildings;
 }
 
-export async function transferBetweenPlayers(args: {
-  fromPlayerId: string;
-  toPlayerId: string;
-  amount: number;
-  description?: string;
+/** One side of a trade, rendered into the summary description. */
+function describeSide(names: string[], cash: number): string {
+  const cashLabel = cash > 0 ? `$ ${cash.toLocaleString("pt-BR")}` : null;
+  if (names.length && cashLabel) return `${names.join(", ")} + ${cashLabel}`;
+  if (names.length) return names.join(", ");
+  return cashLabel ?? "nada";
+}
+
+/**
+ * A two-way swap — cards and cash moving in both directions at once, settled as
+ * a single act. Players were doing these as three to six separate transfers,
+ * which left the log unreadable and a half-applied trade one mistap away.
+ *
+ * Every rule is checked before the first write, so a rejected trade never moves
+ * anything. The writes themselves are sequential: neon-http has no transaction
+ * support, the same exposure every other action here already carries.
+ */
+export async function executeTrade(args: {
+  aPlayerId: string;
+  bPlayerId: string;
+  aPropertyIds: number[];
+  bPropertyIds: number[];
+  aCash: number;
+  bCash: number;
 }) {
   const userId = await requireUser();
   const game = await requireActiveGame(userId);
-  if (args.amount <= 0) throw new Error("Valor inválido.");
-  await adjustBalance(game.id, args.fromPlayerId, -args.amount);
-  await adjustBalance(game.id, args.toPlayerId, args.amount);
+
+  if (args.aPlayerId === args.bPlayerId) {
+    throw new Error("Escolha dois jogadores diferentes.");
+  }
+
+  const aCash = Math.max(0, Math.trunc(args.aCash || 0));
+  const bCash = Math.max(0, Math.trunc(args.bCash || 0));
+  const aIds = [...new Set(args.aPropertyIds)];
+  const bIds = [...new Set(args.bPropertyIds)];
+
+  if (!aIds.length && !bIds.length && !aCash && !bCash) {
+    throw new Error("Nada para trocar.");
+  }
+  if (aIds.some((id) => bIds.includes(id))) {
+    throw new Error("A mesma carta está nos dois lados da troca.");
+  }
+
+  const ctx = await loadGroupContext(game.id);
+  const propById = new Map(ctx.properties.map((p) => [p.id, p]));
+  const ownByProp = new Map(ctx.ownership.map((o) => [o.propertyId, o]));
+
+  const assertOwned = (ids: number[], ownerId: string) => {
+    for (const id of ids) {
+      const prop = propById.get(id);
+      if (!prop) throw new Error("Propriedade inexistente.");
+      if (ownByProp.get(id)?.ownerPlayerId !== ownerId) {
+        throw new Error(`${prop.name} não pertence a quem está oferecendo.`);
+      }
+      const group = inspectGroup({
+        playerId: ownerId,
+        propertyId: id,
+        properties: ctx.properties,
+        ownership: ctx.ownership,
+      });
+      if (group.groupHasBuildings) {
+        throw new Error(
+          `Venda as construções da cor antes de trocar ${prop.name}.`,
+        );
+      }
+    }
+  };
+  assertOwned(aIds, args.aPlayerId);
+  assertOwned(bIds, args.bPlayerId);
+
+  const roster = await db
+    .select({ id: players.id, name: players.name })
+    .from(players)
+    .innerJoin(gamePlayers, eq(gamePlayers.playerId, players.id))
+    .where(eq(gamePlayers.gameId, game.id));
+  const nameById = new Map(roster.map((p) => [p.id, p.name]));
+  const aName = nameById.get(args.aPlayerId);
+  const bName = nameById.get(args.bPlayerId);
+  if (!aName || !bName) throw new Error("Jogador fora da partida.");
+
+  // ── Validation passed; apply the trade ──
+  for (const [ids, newOwner] of [
+    [aIds, args.bPlayerId],
+    [bIds, args.aPlayerId],
+  ] as const) {
+    for (const id of ids) {
+      await db
+        .update(gameProperties)
+        .set({ ownerPlayerId: newOwner })
+        .where(
+          and(
+            eq(gameProperties.gameId, game.id),
+            eq(gameProperties.propertyId, id),
+          ),
+        );
+    }
+  }
+
+  // Only the difference actually changes hands.
+  const net = bCash - aCash;
+  if (net !== 0) {
+    await adjustBalance(game.id, args.aPlayerId, net);
+    await adjustBalance(game.id, args.bPlayerId, -net);
+  }
+
+  const aGave = describeSide(
+    aIds.map((id) => propById.get(id)!.name),
+    aCash,
+  );
+  const bGave = describeSide(
+    bIds.map((id) => propById.get(id)!.name),
+    bCash,
+  );
+
   await db.insert(transactions).values({
     gameId: game.id,
-    fromPlayerId: args.fromPlayerId,
-    toPlayerId: args.toPlayerId,
-    amount: args.amount,
-    type: "transfer",
-    description: args.description || "Transferência entre jogadores",
+    fromPlayerId: args.aPlayerId,
+    toPlayerId: args.bPlayerId,
+    amount: Math.abs(net),
+    type: "trade",
+    description: `Troca: ${aName} deu ${aGave} · ${bName} deu ${bGave}`,
   });
   revalidatePath("/jogo");
 }
@@ -376,54 +480,6 @@ export async function sellPropertyToBank(args: {
     amount: prop.purchasePrice,
     type: "sale",
     description: `Vendeu ${prop.name} ao banco`,
-    propertyId: prop.id,
-  });
-  revalidatePath("/jogo");
-}
-
-export async function transferProperty(args: {
-  fromPlayerId: string;
-  toPlayerId: string;
-  propertyId: number;
-  amount: number;
-}) {
-  const userId = await requireUser();
-  const game = await requireActiveGame(userId);
-  const [prop] = await db
-    .select()
-    .from(properties)
-    .where(eq(properties.id, args.propertyId))
-    .limit(1);
-  if (!prop) throw new Error("Propriedade inválida.");
-
-  if (await colorGroupHasBuildings(game.id, args.propertyId)) {
-    throw new Error(
-      "Venda todas as construções da cor antes de transferir a carta.",
-    );
-  }
-
-  await db
-    .update(gameProperties)
-    .set({ ownerPlayerId: args.toPlayerId })
-    .where(
-      and(
-        eq(gameProperties.gameId, game.id),
-        eq(gameProperties.propertyId, args.propertyId),
-      ),
-    );
-
-  if (args.amount > 0) {
-    await adjustBalance(game.id, args.fromPlayerId, args.amount);
-    await adjustBalance(game.id, args.toPlayerId, -args.amount);
-  }
-
-  await db.insert(transactions).values({
-    gameId: game.id,
-    fromPlayerId: args.toPlayerId,
-    toPlayerId: args.fromPlayerId,
-    amount: args.amount,
-    type: "transfer",
-    description: `Transferiu ${prop.name}`,
     propertyId: prop.id,
   });
   revalidatePath("/jogo");

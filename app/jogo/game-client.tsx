@@ -1,10 +1,19 @@
 "use client";
 
-import { useEffect, useRef, useState, useTransition } from "react";
+import {
+  createContext,
+  useContext,
+  useEffect,
+  useRef,
+  useState,
+  useTransition,
+} from "react";
+import { createPortal } from "react-dom";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { formatMoney } from "@/lib/format";
 import {
+  buildingLevel,
   canBuild,
   canSellBuilding,
   inspectGroup,
@@ -41,7 +50,8 @@ type Sheet =
   | { kind: "player"; playerId: string }
   | { kind: "buy"; playerId: string }
   | { kind: "rent"; payerId: string }
-  | { kind: "transfer"; fromId: string }
+  | { kind: "build"; playerId: string }
+  | { kind: "trade"; fromId: string }
   | { kind: "bank-pay"; playerId: string }
   | { kind: "bank-receive"; playerId: string }
   | { kind: "manage"; playerId: string; propertyId: number }
@@ -59,6 +69,8 @@ export default function GameClient({
   const [sheet, setSheet] = useState<Sheet>(null);
   // Kept mounted while `closing` so the exit animation can play out.
   const [closing, setClosing] = useState(false);
+  // Which card's salary button is mid-flight — only that one greys out.
+  const [salaryFor, setSalaryFor] = useState<string | null>(null);
   const router = useRouter();
   const [, startTransition] = useTransition();
 
@@ -78,6 +90,56 @@ export default function GameClient({
       propsByOwner.get(o.ownerPlayerId)!.push(o);
     }
   }
+  // The query returns ownership rows in no guaranteed order, so a deed strip
+  // would reshuffle on any refresh. Fix it to the same colour-group order the
+  // pickers use, so a card sits in the same place all match long.
+  const deedRank = groupRanks(properties);
+  const deedCompare = byGroupThenCard(deedRank);
+  for (const list of propsByOwner.values()) {
+    list.sort((x, y) =>
+      deedCompare(propsById.get(x.propertyId)!, propsById.get(y.propertyId)!),
+    );
+  }
+
+  // Card supply is not a one-way street — a bankruptcy hands every card back to
+  // the bank — so the quick actions re-derive this each render instead of
+  // latching once the last card is sold.
+  const ownedIds = new Set(
+    ownership.filter((o) => o.ownerPlayerId !== null).map((o) => o.propertyId),
+  );
+  const forSaleCount = properties.filter(
+    (p) => p.purchasePrice && !ownedIds.has(p.id),
+  ).length;
+
+  const rentTargetsFor = (playerId: string) =>
+    ownership.filter(
+      (o) => o.ownerPlayerId && o.ownerPlayerId !== playerId && !o.isMortgaged,
+    ).length;
+
+  const buildableFor = (playerId: string) =>
+    (propsByOwner.get(playerId) || []).filter((o) => {
+      const pr = propsById.get(o.propertyId);
+      if (!pr) return false;
+      const group = inspectGroup({
+        playerId,
+        propertyId: o.propertyId,
+        properties,
+        ownership,
+      });
+      return canBuild(pr, o, group).ok;
+    });
+
+  const collectSalary = (playerId: string) => {
+    setSalaryFor(playerId);
+    startTransition(async () => {
+      try {
+        await A.paySalary(playerId);
+        router.refresh();
+      } finally {
+        setSalaryFor(null);
+      }
+    });
+  };
 
   return (
     <main className="flex flex-col flex-1 pb-32">
@@ -110,6 +172,8 @@ export default function GameClient({
       <div className="px-4 py-5 space-y-3 max-w-md mx-auto w-full">
         {players.map((p) => {
           const owned = propsByOwner.get(p.playerId) || [];
+          const buildable = p.isBankrupt ? [] : buildableFor(p.playerId);
+          const rentTargets = p.isBankrupt ? 0 : rentTargetsFor(p.playerId);
           return (
             <div
               key={p.playerId}
@@ -155,6 +219,56 @@ export default function GameClient({
                   </span>
                 </div>
               </button>
+
+              {/* Quick actions — the four moves that made up ~70% of a real
+                  match. The slots never move: an impossible action greys out
+                  in place rather than vanishing, so a thumb aiming from muscle
+                  memory always lands on the same button. Bankrupt players get
+                  none; the card still opens the drawer to reactivate them. */}
+              {!p.isBankrupt && (
+                <div className="mt-4 flex gap-2 items-stretch">
+                  <QuickAction
+                    tone="strong"
+                    label="Saída"
+                    hint={`+${formatMoney(game.passSalary)}`}
+                    disabled={salaryFor === p.playerId}
+                    onClick={() => collectSalary(p.playerId)}
+                  />
+                  <QuickAction
+                    label="Aluguel"
+                    hint={
+                      rentTargets === 1 ? "1 carta" : `${rentTargets} cartas`
+                    }
+                    disabled={rentTargets === 0}
+                    onClick={() =>
+                      openSheet({ kind: "rent", payerId: p.playerId })
+                    }
+                  />
+                  <QuickAction
+                    label="Comprar"
+                    hint={
+                      forSaleCount === 1 ? "1 livre" : `${forSaleCount} livres`
+                    }
+                    disabled={forSaleCount === 0}
+                    onClick={() =>
+                      openSheet({ kind: "buy", playerId: p.playerId })
+                    }
+                  />
+                  <QuickAction
+                    label="Construir"
+                    hint={
+                      buildable.length === 1
+                        ? "1 carta"
+                        : `${buildable.length} cartas`
+                    }
+                    disabled={buildable.length === 0}
+                    onClick={() =>
+                      openSheet({ kind: "build", playerId: p.playerId })
+                    }
+                  />
+                </div>
+              )}
+
               {owned.length > 0 && (
                 <div className="mt-4 -mx-5 px-5 flex gap-2 overflow-x-auto pb-2 scroll-pl-5">
                   {owned.map((o) => {
@@ -238,10 +352,27 @@ export default function GameClient({
             />
           )}
 
-          {sheet.kind === "transfer" && (
-            <TransferSheet
+          {sheet.kind === "build" && (
+            <BuildSheet
+              playerId={sheet.playerId}
+              players={players}
+              buildable={buildableFor(sheet.playerId)}
+              propsById={propsById}
+              onDone={() => {
+                closeSheet();
+                refresh();
+              }}
+            />
+          )}
+
+          {sheet.kind === "trade" && (
+            <TradeSheet
               fromId={sheet.fromId}
               players={players}
+              properties={properties}
+              ownership={ownership}
+              propsByOwner={propsByOwner}
+              propsById={propsById}
               onDone={() => {
                 closeSheet();
                 refresh();
@@ -264,7 +395,6 @@ export default function GameClient({
             <BankSheet
               mode="receive"
               playerId={sheet.playerId}
-              passSalary={game.passSalary}
               onDone={() => {
                 closeSheet();
                 refresh();
@@ -280,7 +410,6 @@ export default function GameClient({
               ownership={ownByProp.get(sheet.propertyId)!}
               properties={properties}
               allOwnership={ownership}
-              players={players}
               onDone={() => {
                 closeSheet();
                 refresh();
@@ -361,6 +490,149 @@ function MiniDeed({
   );
 }
 
+/**
+ * Deck order for colour groups: each group ranks by the lowest card number it
+ * holds. Card numbers alone will not do — the groups interleave in the deck, so
+ * sorting by number scatters a colour across the list.
+ */
+function groupRanks(properties: Property[]): Map<string, number> {
+  const rank = new Map<string, number>();
+  for (const p of properties) {
+    const seen = rank.get(p.groupName);
+    if (seen === undefined || p.cardNumber < seen) {
+      rank.set(p.groupName, p.cardNumber);
+    }
+  }
+  return rank;
+}
+
+/** Groups first, then deck order inside a group. Total, so ties never shuffle. */
+function byGroupThenCard(rank: Map<string, number>) {
+  return (a: Property, b: Property) =>
+    (rank.get(a.groupName) ?? 0) - (rank.get(b.groupName) ?? 0) ||
+    a.cardNumber - b.cardNumber;
+}
+
+type PickerRow = {
+  property: Property;
+  /** Small second line under the name. */
+  meta?: React.ReactNode;
+  /** Right-hand column, usually a price. */
+  right?: React.ReactNode;
+  disabled?: boolean;
+  selected?: boolean;
+  onSelect: () => void;
+};
+
+/**
+ * Every place cards get picked uses this: one search box, rows banded by colour
+ * group in deck order. Hunting a single name in a flat list of 28 was the slow
+ * part of paying rent, and the colour groups are what players actually reason
+ * about when trading or building.
+ */
+function PropertyPicker({
+  rows,
+  emptyLabel,
+  listClassName = "",
+}: {
+  rows: PickerRow[];
+  emptyLabel: string;
+  listClassName?: string;
+}) {
+  const [query, setQuery] = useState("");
+  const q = query.trim().toLowerCase();
+  const visible = q
+    ? rows.filter(
+        (r) =>
+          r.property.name.toLowerCase().includes(q) ||
+          r.property.groupName.toLowerCase().includes(q),
+      )
+    : rows;
+
+  const byGroup = new Map<string, PickerRow[]>();
+  for (const r of visible) {
+    const g = r.property.groupName;
+    if (!byGroup.has(g)) byGroup.set(g, []);
+    byGroup.get(g)!.push(r);
+  }
+  // Ranked from every row, not just the matches, so groups keep their order
+  // as a search narrows the list.
+  const rank = groupRanks(rows.map((r) => r.property));
+  const compare = byGroupThenCard(rank);
+  for (const rows of byGroup.values()) {
+    rows.sort((x, y) => compare(x.property, y.property));
+  }
+  const groups = [...byGroup.entries()].sort(
+    (a, b) => compare(a[1][0].property, b[1][0].property),
+  );
+
+  return (
+    <div className="space-y-2">
+      <input
+        placeholder="Buscar carta ou cor..."
+        value={query}
+        onChange={(e) => setQuery(e.target.value)}
+        className="w-full px-4 py-2.5 rounded-xl border-2 border-ink/15 focus:border-ink outline-none"
+      />
+      <div className={`space-y-3 ${listClassName}`}>
+        {groups.map(([groupName, groupRows]) => (
+          <div key={groupName} className="space-y-1.5">
+            {/* Deliberately not sticky: a group holds at most six cards, and a
+                pinned header only tall enough for its own text let the rows
+                scroll out from under it. */}
+            <div className="flex items-center gap-2 py-1">
+              <span
+                className="w-3 h-3 rounded-full shrink-0 border border-ink/20"
+                style={{ backgroundColor: groupRows[0].property.color }}
+              />
+              <span className="font-mono text-[10px] uppercase tracking-widest opacity-60">
+                {groupName}
+              </span>
+              <span className="h-px flex-1 bg-ink/10" />
+            </div>
+            {groupRows.map((r) => (
+              <PropertyPickerRow key={r.property.id} row={r} />
+            ))}
+          </div>
+        ))}
+        {visible.length === 0 && (
+          <div className="text-sm text-ink/60 italic text-center py-6">
+            {q ? "Nada encontrado." : emptyLabel}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function PropertyPickerRow({ row }: { row: PickerRow }) {
+  const pr = row.property;
+  return (
+    <button
+      disabled={row.disabled}
+      onClick={row.onSelect}
+      className={`w-full flex items-center justify-between rounded-xl p-3 border-2 transition disabled:opacity-40 ${
+        row.selected ? "border-ink bg-mint/40" : "border-transparent"
+      }`}
+      style={row.selected ? undefined : { backgroundColor: `${pr.color}22` }}
+    >
+      <div className="flex items-center gap-2 min-w-0">
+        <span
+          className="w-3 h-3 rounded-full shrink-0"
+          style={{ backgroundColor: pr.color }}
+        />
+        <div className="text-left min-w-0">
+          <div className="font-medium truncate">{pr.name}</div>
+          {row.meta && <div className="text-xs text-ink/60">{row.meta}</div>}
+        </div>
+      </div>
+      {row.right && (
+        <div className="text-right shrink-0 ml-2">{row.right}</div>
+      )}
+    </button>
+  );
+}
+
 function computeRent(
   property: Property,
   ownership: GameProperty,
@@ -412,6 +684,7 @@ function BottomSheet({
   }, []);
 
   const panelRef = useRef<HTMLDivElement>(null);
+  const [footerNode, setFooterNode] = useState<HTMLDivElement | null>(null);
   const dragStartY = useRef(0);
   const [dragY, setDragY] = useState(0);
   const [drag, setDrag] = useState<"none" | "active" | "settle">("none");
@@ -436,17 +709,21 @@ function BottomSheet({
         className="sheet-backdrop absolute inset-0 bg-ink/40"
         onClick={onClose}
       />
+      {/* Three bands: grab handle, scrolling body, footer. Keeping the footer
+          out of the scroller is what lets it sit flush at the bottom — a
+          sticky element inside cannot escape the scroll container's padding,
+          and pulling it out with a negative margin killed the scrolling. */}
       <div
         ref={panelRef}
         data-closing={closing}
         data-drag={drag}
         style={dragY ? { transform: `translateY(${dragY}px)` } : undefined}
-        className="sheet-panel relative w-full max-w-md bg-cream rounded-t-[36px] p-6 max-h-[88vh] overflow-y-auto pb-10 border-t-2 border-x-2 border-ink"
+        className="sheet-panel relative w-full max-w-md bg-cream rounded-t-[36px] max-h-[88vh] flex flex-col border-t-2 border-x-2 border-ink"
       >
         {/* Grab area — the gesture lives here, not on the scrollable body, so
             flicking through a long list never drags the sheet by accident. */}
         <div
-          className="sheet-grab -mt-6 -mx-6 px-6 pt-6 pb-3 cursor-grab active:cursor-grabbing"
+          className="sheet-grab shrink-0 px-6 pt-6 pb-3 cursor-grab active:cursor-grabbing"
           onPointerDown={(e) => {
             if (closing) return;
             dragStartY.current = e.clientY;
@@ -468,10 +745,31 @@ function BottomSheet({
         >
           <div className="w-12 h-1.5 bg-ink/20 rounded-full mx-auto" />
         </div>
-        <div className="mt-2">{children}</div>
+        <div className="flex-1 min-h-0 overflow-y-auto px-6 pt-2 pb-6">
+          <SheetFooterSlot.Provider value={footerNode}>
+            {children}
+          </SheetFooterSlot.Provider>
+        </div>
+        {/* Stays collapsed until a sheet portals something in. */}
+        <div
+          ref={setFooterNode}
+          className="empty:hidden shrink-0 px-6 pt-3 pb-10 border-t-2 border-ink/10"
+        />
       </div>
     </div>
   );
+}
+
+/**
+ * Lets a sheet put content in the panel's footer band, outside the scrolling
+ * body, without every sheet having to hoist that state up to the caller.
+ */
+const SheetFooterSlot = createContext<HTMLDivElement | null>(null);
+
+function SheetFooter({ children }: { children: React.ReactNode }) {
+  const node = useContext(SheetFooterSlot);
+  if (!node) return null;
+  return createPortal(children, node);
 }
 
 function PrimaryButton({
@@ -484,6 +782,37 @@ function PrimaryButton({
       className="w-full py-3 rounded-2xl bg-ink text-cream font-bold active:scale-[0.98] disabled:opacity-50 border-2 border-ink"
     >
       {children}
+    </button>
+  );
+}
+
+/**
+ * A card-level action. The hint line carries the live count that explains why
+ * the button is enabled or not, so a greyed button is never a mystery.
+ */
+function QuickAction({
+  label,
+  hint,
+  tone = "soft",
+  ...rest
+}: React.ButtonHTMLAttributes<HTMLButtonElement> & {
+  label: string;
+  hint: string;
+  tone?: "soft" | "strong";
+}) {
+  return (
+    <button
+      {...rest}
+      className={`flex-1 min-w-0 px-0.5 py-2 rounded-2xl border-2 border-ink active:scale-[0.96] transition disabled:opacity-30 disabled:active:scale-100 ${
+        tone === "strong" ? "bg-ink text-cream" : "bg-cream text-ink"
+      }`}
+    >
+      <span className="block font-mono text-[10px] uppercase tracking-tight font-bold truncate">
+        {label}
+      </span>
+      <span className="block font-mono text-[9px] opacity-60 truncate">
+        {hint}
+      </span>
     </button>
   );
 }
@@ -544,6 +873,8 @@ function PlayerActions({
         </div>
       </div>
 
+      {/* "Passou pela saída" lives on the card as a one-tap action, so it is
+          deliberately absent here. */}
       <div className="grid grid-cols-2 gap-2 pt-2">
         <PrimaryButton onClick={() => onAction({ kind: "rent", payerId: playerId })}>
           Pagar aluguel
@@ -551,20 +882,11 @@ function PlayerActions({
         <PrimaryButton onClick={() => onAction({ kind: "buy", playerId })}>
           Comprar
         </PrimaryButton>
-        <SecondaryButton onClick={() => onAction({ kind: "transfer", fromId: playerId })}>
-          Transferir
+        <SecondaryButton onClick={() => onAction({ kind: "build", playerId })}>
+          Construir
         </SecondaryButton>
-        <SecondaryButton
-          onClick={() =>
-            startTransition(async () => {
-              await A.paySalary(playerId);
-              router.refresh();
-              onClose();
-            })
-          }
-          disabled={pending}
-        >
-          Passou pela saída
+        <SecondaryButton onClick={() => onAction({ kind: "trade", fromId: playerId })}>
+          Trocar
         </SecondaryButton>
         <SecondaryButton onClick={() => onAction({ kind: "bank-receive", playerId })}>
           Receber do banco
@@ -579,39 +901,40 @@ function PlayerActions({
           <h3 className="text-xs font-bold uppercase text-ink/60 mb-2">
             Propriedades ({owned.length})
           </h3>
-          <div className="space-y-2">
-            {owned.map((o) => {
+          <PropertyPicker
+            emptyLabel="Nenhuma propriedade."
+            rows={owned.map((o) => {
               const pr = propsById.get(o.propertyId)!;
-              return (
-                <button
-                  key={o.propertyId}
-                  onClick={() => onAction({ kind: "manage", playerId, propertyId: o.propertyId })}
-                  className="w-full text-left rounded-lg px-3 py-2 flex items-center justify-between"
-                  style={{ backgroundColor: `${pr.color}22` }}
-                >
-                  <div className="flex items-center gap-2">
-                    <span
-                      className="w-3 h-3 rounded-full"
-                      style={{ backgroundColor: pr.color }}
-                    />
-                    <span className="font-medium">{pr.name}</span>
-                    {o.hasHotel && <span>🏨</span>}
-                    {!o.hasHotel && o.houses > 0 && <span>{"🏠".repeat(o.houses)}</span>}
+              return {
+                property: pr,
+                meta: (
+                  <>
+                    {o.hasHotel
+                      ? "🏨 hotel"
+                      : o.houses > 0
+                        ? "🏠".repeat(o.houses)
+                        : "sem construções"}
                     {o.isMortgaged && (
-                      <span className="text-xs text-crimson font-semibold">
-                        (hipotecada)
+                      <span className="text-crimson font-semibold">
+                        {" "}
+                        · hipotecada
                       </span>
                     )}
-                  </div>
-                  <span className="text-xs text-ink/60">›</span>
-                </button>
-              );
+                  </>
+                ),
+                right: <span className="text-xs text-ink/60">›</span>,
+                onSelect: () =>
+                  onAction({ kind: "manage", playerId, propertyId: o.propertyId }),
+              };
             })}
-          </div>
+          />
         </div>
       )}
 
+      {/* Going bankrupt returns every card this player holds to the bank, so
+          the board reopens for buying on the next render. */}
       <button
+        disabled={pending}
         onClick={() =>
           startTransition(async () => {
             await A.setBankrupt(playerId, !me.isBankrupt);
@@ -619,7 +942,7 @@ function PlayerActions({
             onClose();
           })
         }
-        className="w-full text-sm text-crimson py-2 mt-2"
+        className="w-full text-sm text-crimson py-2 mt-2 disabled:opacity-50"
       >
         {me.isBankrupt ? "Reativar jogador" : "Marcar como falido"}
       </button>
@@ -645,13 +968,9 @@ function BuyPropertySheet({
     ownership.filter((o) => o.ownerPlayerId !== null).map((o) => o.propertyId),
   );
   const [pending, startTransition] = useTransition();
-  const [query, setQuery] = useState("");
 
   const available = properties.filter(
-    (p) =>
-      !ownedSet.has(p.id) &&
-      p.purchasePrice &&
-      p.name.toLowerCase().includes(query.toLowerCase()),
+    (p) => !ownedSet.has(p.id) && p.purchasePrice,
   );
 
   return (
@@ -662,42 +981,31 @@ function BuyPropertySheet({
           {me.name} · saldo {formatMoney(me.balance)}
         </div>
       </div>
-      <input
-        placeholder="Buscar..."
-        value={query}
-        onChange={(e) => setQuery(e.target.value)}
-        className="w-full px-4 py-3 rounded-xl border border-ink/15"
-      />
-      <div className="space-y-2">
-        {available.map((p) => (
-          <button
-            key={p.id}
-            disabled={pending || me.balance < (p.purchasePrice || 0)}
-            onClick={() =>
+      <PropertyPicker
+        emptyLabel="Sem propriedades disponíveis."
+        rows={available.map((p) => {
+          const tooPoor = me.balance < (p.purchasePrice || 0);
+          return {
+            property: p,
+            disabled: pending || tooPoor,
+            right: (
+              <>
+                <div className="font-bold">
+                  {formatMoney(p.purchasePrice!)}
+                </div>
+                {tooPoor && (
+                  <div className="text-[10px] text-crimson">saldo baixo</div>
+                )}
+              </>
+            ),
+            onSelect: () =>
               startTransition(async () => {
                 await A.buyProperty({ playerId, propertyId: p.id });
                 onDone();
-              })
-            }
-            className="w-full flex items-center justify-between rounded-lg p-3 disabled:opacity-50"
-            style={{ backgroundColor: `${p.color}22` }}
-          >
-            <div className="flex items-center gap-2">
-              <span
-                className="w-3 h-3 rounded-full"
-                style={{ backgroundColor: p.color }}
-              />
-              <span className="font-medium text-left">{p.name}</span>
-            </div>
-            <span className="font-bold">{formatMoney(p.purchasePrice!)}</span>
-          </button>
-        ))}
-        {available.length === 0 && (
-          <div className="text-sm text-ink/60 italic text-center py-6">
-            Sem propriedades disponíveis.
-          </div>
-        )}
-      </div>
+              }),
+          };
+        })}
+      />
     </div>
   );
 }
@@ -719,6 +1027,7 @@ function PayRentSheet({
   const propsById = new Map(properties.map((p) => [p.id, p]));
   const playerById = new Map(players.map((p) => [p.playerId, p]));
 
+  const ownByProp = new Map(ownership.map((o) => [o.propertyId, o]));
   const rentable = ownership.filter(
     (o) => o.ownerPlayerId && o.ownerPlayerId !== payerId && !o.isMortgaged,
   );
@@ -739,39 +1048,29 @@ function PayRentSheet({
         </div>
       </div>
 
-      <div className="space-y-2 max-h-72 overflow-y-auto">
-        {rentable.map((o) => {
+      <PropertyPicker
+        emptyLabel="Nenhuma propriedade para pagar aluguel."
+        rows={rentable.map((o) => {
           const pr = propsById.get(o.propertyId)!;
           const owner = playerById.get(o.ownerPlayerId!)!;
-          const isSel = selectedId === o.propertyId;
           const rent = computeRent(pr, o, diceSum);
-          return (
-            <button
-              key={o.propertyId}
-              onClick={() => setSelectedId(o.propertyId)}
-              className={`w-full flex items-center justify-between rounded-lg p-3 ${isSel ? "ring-2 ring-ink" : ""}`}
-              style={{ backgroundColor: `${pr.color}22` }}
-            >
-              <div className="flex items-center gap-2 min-w-0">
-                <span
-                  className="w-3 h-3 rounded-full shrink-0"
-                  style={{ backgroundColor: pr.color }}
-                />
-                <div className="text-left min-w-0">
-                  <div className="font-medium truncate">{pr.name}</div>
-                  <div className="text-xs text-ink/60">
-                    Dono: {owner.name}
-                    {pr.isStock
-                      ? " · ações"
-                      : o.hasHotel
-                        ? " · hotel"
-                        : o.houses > 0
-                          ? ` · ${o.houses} casa(s)`
-                          : ""}
-                  </div>
-                </div>
-              </div>
-              <div className="text-right shrink-0 ml-2">
+          return {
+            property: pr,
+            selected: selectedId === o.propertyId,
+            meta: (
+              <>
+                Dono: {owner.name}
+                {pr.isStock
+                  ? " · ações"
+                  : o.hasHotel
+                    ? " · hotel"
+                    : o.houses > 0
+                      ? ` · ${o.houses} casa(s)`
+                      : ""}
+              </>
+            ),
+            right: (
+              <>
                 <div className="font-bold text-ink">
                   {pr.isStock
                     ? `${(pr.stockMultiplier || 0).toLocaleString("pt-BR")} × dados`
@@ -782,20 +1081,19 @@ function PayRentSheet({
                     = {formatMoney(rent)}
                   </div>
                 )}
-              </div>
-            </button>
-          );
+              </>
+            ),
+            onSelect: () => setSelectedId(o.propertyId),
+          };
         })}
-        {rentable.length === 0 && (
-          <div className="text-sm text-ink/60 italic text-center py-6">
-            Nenhuma propriedade para pagar aluguel.
-          </div>
-        )}
-      </div>
+      />
 
-      {selected && (
-        <div className="space-y-3 pt-2">
-          {needsDice && (
+      {/* Lives in the panel's footer band: with up to 28 cards to scroll
+          through, a confirm button under the list meant scrolling back down
+          after every pick. */}
+      <SheetFooter>
+        <div className="space-y-3">
+          {selected && needsDice && (
             <div className="bg-mint border-2 border-ink rounded-xl p-3">
               <label className="block text-sm font-semibold text-ink mb-2">
                 Soma dos dados (aluguel = soma × ${(selected.stockMultiplier || 0).toLocaleString("pt-BR")})
@@ -812,61 +1110,196 @@ function PayRentSheet({
                 ))}
               </div>
               <div className="text-sm mt-2 text-ink">
-                Total: <strong>{formatMoney(diceSum * (selected.stockMultiplier || 0))}</strong>
+                Total:{" "}
+                <strong>
+                  {formatMoney(diceSum * (selected.stockMultiplier || 0))}
+                </strong>
               </div>
             </div>
           )}
           <PrimaryButton
-            disabled={pending}
+            disabled={pending || !selected}
             onClick={() =>
               startTransition(async () => {
                 await A.payRent({
                   payerId,
-                  propertyId: selected.id,
+                  propertyId: selected!.id,
                   diceSum: needsDice ? diceSum : undefined,
                 });
                 onDone();
               })
             }
           >
-            Confirmar pagamento
+            {selected
+              ? `Confirmar — ${formatMoney(
+                  computeRent(selected, ownByProp.get(selected.id)!, diceSum),
+                )}`
+              : "Selecione uma propriedade"}
           </PrimaryButton>
         </div>
-      )}
+      </SheetFooter>
     </div>
   );
 }
 
-function TransferSheet({
-  fromId,
+/**
+ * The cards a player can build on right now, one tap each. Building clusters
+ * late in a match and always on a full colour set, so this list is short and
+ * changes often — it is derived fresh from the group rules by the caller.
+ */
+function BuildSheet({
+  playerId,
   players,
+  buildable,
+  propsById,
   onDone,
 }: {
-  fromId: string;
+  playerId: string;
   players: PlayerRow[];
+  buildable: GameProperty[];
+  propsById: Map<number, Property>;
   onDone: () => void;
 }) {
-  const from = players.find((x) => x.playerId === fromId)!;
-  const others = players.filter((x) => x.playerId !== fromId);
-  const [toId, setToId] = useState<string | null>(others[0]?.playerId ?? null);
-  const [amount, setAmount] = useState<number>(0);
-  const [description, setDescription] = useState("");
+  const me = players.find((x) => x.playerId === playerId)!;
   const [pending, startTransition] = useTransition();
 
   return (
     <div className="space-y-3">
-      <h2 className="font-bold text-lg">Transferir</h2>
-      <div className="text-sm text-ink/60">
-        De {from.name} · saldo {formatMoney(from.balance)}
+      <div>
+        <h2 className="font-bold text-lg">Construir</h2>
+        <div className="text-sm text-ink/60">
+          {me.name} · saldo {formatMoney(me.balance)}
+        </div>
       </div>
 
+      <PropertyPicker
+        emptyLabel="Nada para construir. É preciso ter todas as cartas de uma cor, sem hipoteca, e construir por igual."
+        rows={buildable.map((o) => {
+          const pr = propsById.get(o.propertyId)!;
+          const level = buildingLevel(o);
+          const isHotelStep = level === 4;
+          const cost = (isHotelStep ? pr.hotelCost : pr.houseCost) || 0;
+          const tooPoor = me.balance < cost;
+          return {
+            property: pr,
+            disabled: pending || tooPoor,
+            meta: (
+              <>
+                {level > 0 ? "🏠".repeat(level) : "sem construções"} →{" "}
+                {isHotelStep ? "🏨 hotel" : `${level + 1}/4 casas`}
+              </>
+            ),
+            right: (
+              <>
+                <div className="font-bold">{formatMoney(cost)}</div>
+                {tooPoor && (
+                  <div className="text-[10px] text-crimson">saldo baixo</div>
+                )}
+              </>
+            ),
+            onSelect: () =>
+              startTransition(async () => {
+                if (isHotelStep) {
+                  await A.buildHotel({ playerId, propertyId: pr.id });
+                } else {
+                  await A.buildHouse({ playerId, propertyId: pr.id });
+                }
+                onDone();
+              }),
+          };
+        })}
+      />
+    </div>
+  );
+}
+
+/**
+ * A two-way trade settled in one screen. The old flow split this across a cash
+ * transfer sheet and a per-card transfer buried in the property sheet, so a
+ * single negotiation took three to six operations and landed in the log as
+ * unrelated rows.
+ */
+function TradeSheet({
+  fromId,
+  players,
+  properties,
+  ownership,
+  propsByOwner,
+  propsById,
+  onDone,
+}: {
+  fromId: string;
+  players: PlayerRow[];
+  properties: Property[];
+  ownership: GameProperty[];
+  propsByOwner: Map<string, GameProperty[]>;
+  propsById: Map<number, Property>;
+  onDone: () => void;
+}) {
+  const others = players.filter(
+    (x) => x.playerId !== fromId && !x.isBankrupt,
+  );
+  const [toId, setToId] = useState<string | null>(others[0]?.playerId ?? null);
+  const [aPicked, setAPicked] = useState<number[]>([]);
+  const [bPicked, setBPicked] = useState<number[]>([]);
+  const [aCash, setACash] = useState(0);
+  const [bCash, setBCash] = useState(0);
+  const [error, setError] = useState<string | null>(null);
+  const [pending, startTransition] = useTransition();
+
+  const a = players.find((x) => x.playerId === fromId)!;
+  const b = toId ? players.find((x) => x.playerId === toId) ?? null : null;
+
+  // A card whose colour still has buildings anywhere cannot change hands — the
+  // server enforces it, so it must not be offerable here either.
+  const tradeable = (playerId: string) =>
+    (propsByOwner.get(playerId) || []).filter((o) => {
+      const group = inspectGroup({
+        playerId,
+        propertyId: o.propertyId,
+        properties,
+        ownership,
+      });
+      return !group.groupHasBuildings;
+    });
+
+  const toggle = (
+    id: number,
+    picked: number[],
+    set: (v: number[]) => void,
+  ) => {
+    setError(null);
+    set(picked.includes(id) ? picked.filter((x) => x !== id) : [...picked, id]);
+  };
+
+  const net = bCash - aCash;
+  const isEmpty =
+    !aPicked.length && !bPicked.length && aCash <= 0 && bCash <= 0;
+  const aBroke = aCash > a.balance;
+  const bBroke = !!b && bCash > b.balance;
+
+  const side = (names: string[], cash: number) => {
+    const parts = [...names];
+    if (cash > 0) parts.push(formatMoney(cash));
+    return parts.length ? parts.join(", ") : "nada";
+  };
+
+  return (
+    <div className="space-y-3">
+      <h2 className="font-bold text-lg">Troca</h2>
+
       <div className="space-y-2">
-        <label className="text-xs uppercase text-ink/60">Para</label>
+        <label className="text-xs uppercase text-ink/60">Trocar com</label>
         <div className="grid grid-cols-2 gap-2">
           {others.map((p) => (
             <button
               key={p.playerId}
-              onClick={() => setToId(p.playerId)}
+              onClick={() => {
+                setToId(p.playerId);
+                setBPicked([]);
+                setBCash(0);
+                setError(null);
+              }}
               className={`px-3 py-2 rounded-lg border-2 text-left ${toId === p.playerId ? "border-ink bg-mint/30" : "border-ink/15"}`}
             >
               <div className="font-medium">{p.name}</div>
@@ -874,43 +1307,177 @@ function TransferSheet({
             </button>
           ))}
         </div>
+        {others.length === 0 && (
+          <div className="text-sm text-ink/60 italic py-3">
+            Não há outro jogador ativo para trocar.
+          </div>
+        )}
       </div>
 
+      {b && (
+        <>
+          <TradeSide
+            player={a}
+            offered={tradeable(fromId)}
+            picked={aPicked}
+            cash={aCash}
+            overdrawn={aBroke}
+            propsById={propsById}
+            onToggle={(id) => toggle(id, aPicked, setAPicked)}
+            onCash={(v) => {
+              setError(null);
+              setACash(v);
+            }}
+          />
+          <div className="text-center font-mono text-[10px] uppercase tracking-widest opacity-40">
+            em troca de
+          </div>
+          {/* Keyed by player so switching partner starts a clean side rather
+              than inheriting the previous one's search text. */}
+          <TradeSide
+            key={b.playerId}
+            player={b}
+            offered={tradeable(b.playerId)}
+            picked={bPicked}
+            cash={bCash}
+            overdrawn={bBroke}
+            propsById={propsById}
+            onToggle={(id) => toggle(id, bPicked, setBPicked)}
+            onCash={(v) => {
+              setError(null);
+              setBCash(v);
+            }}
+          />
+
+          <div className="bg-cream-soft rounded-xl p-3 text-sm space-y-1">
+            <div>
+              <strong>{a.name}</strong> dá{" "}
+              {side(
+                aPicked.map((id) => propsById.get(id)!.name),
+                aCash,
+              )}
+            </div>
+            <div>
+              <strong>{b.name}</strong> dá{" "}
+              {side(
+                bPicked.map((id) => propsById.get(id)!.name),
+                bCash,
+              )}
+            </div>
+            {net !== 0 && (
+              <div className="text-ink/60 pt-1 border-t border-ink/10">
+                Saldo líquido: {net > 0 ? a.name : b.name} recebe{" "}
+                {formatMoney(Math.abs(net))}
+              </div>
+            )}
+          </div>
+
+          {error && <div className="text-sm text-crimson">{error}</div>}
+
+          <PrimaryButton
+            disabled={pending || isEmpty || aBroke || bBroke}
+            onClick={() =>
+              startTransition(async () => {
+                try {
+                  await A.executeTrade({
+                    aPlayerId: fromId,
+                    bPlayerId: b.playerId,
+                    aPropertyIds: aPicked,
+                    bPropertyIds: bPicked,
+                    aCash,
+                    bCash,
+                  });
+                  onDone();
+                } catch (e) {
+                  setError(
+                    e instanceof Error ? e.message : "Não foi possível trocar.",
+                  );
+                }
+              })
+            }
+          >
+            Confirmar troca
+          </PrimaryButton>
+        </>
+      )}
+    </div>
+  );
+}
+
+function TradeSide({
+  player,
+  offered,
+  picked,
+  cash,
+  overdrawn,
+  propsById,
+  onToggle,
+  onCash,
+}: {
+  player: PlayerRow;
+  offered: GameProperty[];
+  picked: number[];
+  cash: number;
+  overdrawn: boolean;
+  propsById: Map<number, Property>;
+  onToggle: (id: number) => void;
+  onCash: (v: number) => void;
+}) {
+  return (
+    <div className="border-2 border-ink/15 rounded-2xl p-3 space-y-2">
+      <div className="flex items-center justify-between gap-2">
+        <div className="flex items-center gap-2 min-w-0">
+          <span
+            className="w-6 h-6 rounded-lg grid place-items-center text-white text-xs font-black shrink-0"
+            style={{ backgroundColor: player.color }}
+          >
+            {player.name[0]?.toUpperCase()}
+          </span>
+          <span className="font-bold truncate">{player.name} dá</span>
+        </div>
+        <span className="text-xs text-ink/60 shrink-0">
+          {formatMoney(player.balance)}
+        </span>
+      </div>
+
+      <PropertyPicker
+        listClassName="max-h-64 overflow-y-auto"
+        emptyLabel="Nenhuma carta livre para trocar."
+        rows={offered.map((o) => {
+          const pr = propsById.get(o.propertyId)!;
+          const on = picked.includes(o.propertyId);
+          return {
+            property: pr,
+            selected: on,
+            // A mortgage travels with the deed, so the other side has to see
+            // it before agreeing.
+            meta: o.isMortgaged ? (
+              <span className="text-crimson font-semibold">hipotecada</span>
+            ) : on ? (
+              "✓ incluída"
+            ) : undefined,
+            onSelect: () => onToggle(o.propertyId),
+          };
+        })}
+      />
+
       <label className="block">
-        <span className="text-xs uppercase text-ink/60">Valor</span>
+        <span className="text-xs uppercase text-ink/60">Dinheiro</span>
         <input
           type="number"
           inputMode="numeric"
-          value={amount || ""}
-          onChange={(e) => setAmount(Number(e.target.value))}
-          className="mt-1 w-full px-4 py-3 rounded-xl border border-ink/15 text-lg font-bold"
+          min={0}
+          value={cash || ""}
+          onChange={(e) => onCash(Math.max(0, Number(e.target.value)))}
           placeholder="0"
+          className={`mt-1 w-full px-4 py-2.5 rounded-xl border-2 outline-none text-lg font-bold ${overdrawn ? "border-crimson text-crimson" : "border-ink/15 focus:border-ink"}`}
         />
+        {overdrawn && (
+          <span className="text-xs text-crimson">
+            Maior que o saldo de {player.name}.
+          </span>
+        )}
       </label>
-
-      <input
-        value={description}
-        onChange={(e) => setDescription(e.target.value)}
-        placeholder="Motivo (opcional)"
-        className="w-full px-4 py-3 rounded-xl border border-ink/15"
-      />
-
-      <PrimaryButton
-        disabled={pending || !toId || amount <= 0}
-        onClick={() =>
-          startTransition(async () => {
-            await A.transferBetweenPlayers({
-              fromPlayerId: fromId,
-              toPlayerId: toId!,
-              amount,
-              description,
-            });
-            onDone();
-          })
-        }
-      >
-        Transferir {amount > 0 ? formatMoney(amount) : ""}
-      </PrimaryButton>
     </div>
   );
 }
@@ -918,29 +1485,32 @@ function TransferSheet({
 function BankSheet({
   mode,
   playerId,
-  passSalary,
   onDone,
 }: {
   mode: "pay" | "receive";
   playerId: string;
-  passSalary?: number;
   onDone: () => void;
 }) {
   const [amount, setAmount] = useState<number>(0);
   const [description, setDescription] = useState("");
   const [pending, startTransition] = useTransition();
 
+  // Taken from what a real 642-action match actually used. The old $ 5.000
+  // presets were never touched once; $ 500 was the second most common amount
+  // in both directions and had no preset at all.
   const presets =
     mode === "pay"
       ? [
+          { v: 300, label: "$ 300" },
+          { v: 500, label: "$ 500" },
           { v: 1000, label: "Imposto $ 1.000" },
           { v: 2000, label: "Multa $ 2.000" },
-          { v: 5000, label: "Imposto $ 5.000" },
         ]
       : [
-          { v: passSalary || 2000, label: `Salário $ ${(passSalary || 2000).toLocaleString("pt-BR")}` },
+          { v: 500, label: "$ 500" },
+          { v: 800, label: "$ 800" },
           { v: 1000, label: "Prêmio $ 1.000" },
-          { v: 5000, label: "Prêmio $ 5.000" },
+          { v: 1500, label: "$ 1.500" },
         ];
 
   return (
@@ -949,7 +1519,7 @@ function BankSheet({
         {mode === "pay" ? "Pagar ao banco" : "Receber do banco"}
       </h2>
 
-      <div className="grid grid-cols-1 gap-2">
+      <div className="grid grid-cols-2 gap-2">
         {presets.map((p) => (
           <button
             key={p.v}
@@ -971,7 +1541,7 @@ function BankSheet({
           inputMode="numeric"
           value={amount || ""}
           onChange={(e) => setAmount(Number(e.target.value))}
-          className="mt-1 w-full px-4 py-3 rounded-xl border border-ink/15 text-lg font-bold"
+          className="mt-1 w-full px-4 py-3 rounded-xl border-2 border-ink/15 focus:border-ink outline-none text-lg font-bold"
           placeholder="0"
         />
       </label>
@@ -980,7 +1550,7 @@ function BankSheet({
         value={description}
         onChange={(e) => setDescription(e.target.value)}
         placeholder="Motivo (opcional)"
-        className="w-full px-4 py-3 rounded-xl border border-ink/15"
+        className="w-full px-4 py-3 rounded-xl border-2 border-ink/15 focus:border-ink outline-none"
       />
 
       <PrimaryButton
@@ -1008,7 +1578,6 @@ function ManagePropertySheet({
   ownership,
   properties,
   allOwnership,
-  players,
   onDone,
 }: {
   playerId: string;
@@ -1017,12 +1586,9 @@ function ManagePropertySheet({
   ownership: GameProperty;
   properties: Property[];
   allOwnership: GameProperty[];
-  players: PlayerRow[];
   onDone: () => void;
 }) {
   const [pending, startTransition] = useTransition();
-  const [transferTo, setTransferTo] = useState<string | null>(null);
-  const [transferAmount, setTransferAmount] = useState(0);
 
   const group = inspectGroup({
     playerId,
@@ -1173,50 +1739,8 @@ function ManagePropertySheet({
         </div>
       )}
 
-      {!deedLocked && (
-        <div className="border-t pt-3 mt-2 space-y-2">
-          <div className="text-xs uppercase text-ink/60 font-semibold">
-            Transferir para outro jogador
-          </div>
-          <div className="grid grid-cols-2 gap-2">
-            {players
-              .filter((p) => p.playerId !== playerId)
-              .map((p) => (
-                <button
-                  key={p.playerId}
-                  onClick={() => setTransferTo(p.playerId)}
-                  className={`px-3 py-2 rounded-lg border-2 text-left ${transferTo === p.playerId ? "border-ink bg-mint/30" : "border-ink/15"}`}
-                >
-                  <div className="font-medium text-sm">{p.name}</div>
-                </button>
-              ))}
-          </div>
-          <input
-            type="number"
-            inputMode="numeric"
-            value={transferAmount || ""}
-            onChange={(e) => setTransferAmount(Number(e.target.value))}
-            placeholder="Valor pago (0 = grátis)"
-            className="w-full px-4 py-2 rounded-xl border border-ink/15"
-          />
-          <SecondaryButton
-            disabled={pending || !transferTo}
-            onClick={() =>
-              startTransition(async () => {
-                await A.transferProperty({
-                  fromPlayerId: playerId,
-                  toPlayerId: transferTo!,
-                  propertyId: property.id,
-                  amount: transferAmount,
-                });
-                onDone();
-              })
-            }
-          >
-            Confirmar transferência
-          </SecondaryButton>
-        </div>
-      )}
+      {/* Moving a card to another player lives in the trade sheet now, so a
+          swap is agreed and settled in one act instead of card by card. */}
     </div>
   );
 }
@@ -1248,7 +1772,9 @@ function LogSheet({
               <span className="font-bold">{formatMoney(t.amount)}</span>
             </div>
             <div className="text-xs text-ink/60">
-              {t.fromPlayerId ? pById.get(t.fromPlayerId) || "?" : "Banco"} →{" "}
+              {t.fromPlayerId ? pById.get(t.fromPlayerId) || "?" : "Banco"}
+              {/* A trade moves things both ways, so an arrow would misread. */}
+              {t.type === "trade" ? " ⇄ " : " → "}
               {t.toPlayerId ? pById.get(t.toPlayerId) || "?" : "Banco"}
               {" · "}
               {new Date(t.createdAt).toLocaleTimeString("pt-BR")}

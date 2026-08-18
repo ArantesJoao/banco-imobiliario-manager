@@ -153,7 +153,7 @@ export const transactions = pgTable("transactions", {
   fromPlayerId: uuid("from_player_id").references(() => players.id),
   toPlayerId: uuid("to_player_id").references(() => players.id),
   amount: integer("amount").notNull(),
-  // type: rent, purchase, sale, build, sell_building, mortgage, unmortgage, salary, transfer, bank_in, bank_out
+  // type: rent, purchase, sale, build, sell_building, mortgage, unmortgage, salary, trade, bank_in, bank_out
   type: text("type").notNull(),
   description: text("description").notNull(),
   propertyId: integer("property_id").references(() => properties.id),
